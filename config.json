@@ -1,0 +1,11 @@
+{
+  "guildId": "YOUR_GUILD_ID",
+  "twitch": {
+    "username": "l3attar_",
+    "clientId": "YOUR_TWITCH_CLIENT_ID",
+    "clientSecret": "YOUR_TWITCH_CLIENT_SECRET"
+  },
+  "youtube": {
+    "channelId": "YOUR_YOUTUBE_CHANNEL_ID"
+  }
+}
