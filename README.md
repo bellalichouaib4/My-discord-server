@@ -5,7 +5,7 @@ Official Discord bot for the L3attaR streaming community.
 **Socials:**
 - 🔴 Twitch: [twitch.tv/l3attar_](https://twitch.tv/l3attar_)
 - 📺 YouTube: [youtube.com/@L3attaR](https://www.youtube.com/@L3attaR)
-- 📸 Instagram: [l3attar_clips](https://www.instagram.com/l3attar_clips/)
+- 📸 Instagram: [l3attar_clips](https://www.instagram.com/l3attar/)
 - 🎵 TikTok: [@l3attar_b](https://www.tiktok.com/@l3attar_b)
 - 📘 Facebook: [L3attar01](https://www.facebook.com/L3attar01/)
 
