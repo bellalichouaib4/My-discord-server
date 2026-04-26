@@ -72,14 +72,14 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🎤 ── VOICE', type: 'member', voice: true,
+    name: '🎤 ── VOICE', type: 'voice',
     channels: [
-      { name: '➕ Create Room',    voice: true, type: 'member' },
-      { name: '🔊 Lounge',         voice: true, type: 'member' },
-      { name: '🎮 Gaming',         voice: true, type: 'member' },
-      { name: '🔴 Stream Room',    voice: true, type: 'member' },
-      { name: '🎵 Music / Chill',  voice: true, type: 'member' },
-      { name: '📖 Study / AFK',    voice: true, type: 'member' },
+      { name: '➕ Create Room',    voice: true, type: 'voice' },
+      { name: '🔊 Lounge',         voice: true, type: 'voice' },
+      { name: '🎮 Gaming',         voice: true, type: 'voice' },
+      { name: '🔴 Stream Room',    voice: true, type: 'voice' },
+      { name: '🎵 Music / Chill',  voice: true, type: 'voice' },
+      { name: '📖 Study / AFK',    voice: true, type: 'voice' },
     ]
   },
   {
@@ -139,19 +139,30 @@ function permsFor(type, roleMap, guild) {
   const mod      = roleMap['🛡️ Moderateur']?.id;
   const admin    = roleMap['⚙️ Admin']?.id;
 
+  // ── Admin-only channels
   if (type === 'admin') return [
     { id: everyone, deny:  [PermissionFlagsBits.ViewChannel] },
     { id: mod,      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
     { id: admin,    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
   ].filter(p => p.id);
 
+  // ── Voice channels — verified members can join + speak + use mic
+  if (type === 'voice') return [
+    { id: everyone, deny:  [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
+    { id: member,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.Stream, PermissionFlagsBits.UseVAD] },
+    { id: mod,      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers] },
+    { id: admin,    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers, PermissionFlagsBits.MoveMembers] },
+  ].filter(p => p.id);
+
+  // ── Member-only text channels
   if (type === 'member') return [
     { id: everyone, deny:  [PermissionFlagsBits.ViewChannel] },
-    { id: member,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions] },
+    { id: member,   allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
     { id: mod,      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
     { id: admin,    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
   ].filter(p => p.id);
 
+  // ── Public channels — everyone can read, only staff can type
   return [
     { id: everyone, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
     { id: member,   allow: [PermissionFlagsBits.ViewChannel] },
@@ -174,9 +185,9 @@ async function postWelcomeInfo(channel) {
     )
     .addFields(
       { name: '\u200B', value: '**Getting started:**' },
-      { name: '1️⃣ Read the rules',      value: 'Check <#rules> before anything else.',                   inline: true },
-      { name: '2️⃣ Verify yourself',     value: 'Click the button in <#verify> to unlock all channels.',  inline: true },
-      { name: '3️⃣ Get notifications',   value: 'Choose your alerts in <#get-notified>.',                 inline: true },
+      { name: '1️⃣ Read the rules',    value: 'Check <#rules> before anything else.',                  inline: true },
+      { name: '2️⃣ Verify yourself',   value: 'Click the button in <#verify> to unlock all channels.', inline: true },
+      { name: '3️⃣ Get notifications', value: 'Choose your alerts in <#get-notified>.',                inline: true },
     )
     .setFooter({ text: 'L3attaR Community · Built with ❤️' });
   await channel.send({ embeds: [embed] });
@@ -192,7 +203,7 @@ async function postRules(channel) {
       { name: '2️⃣ No spam',               value: 'No repeated messages, walls of text, or excessive emojis.' },
       { name: '3️⃣ No NSFW content',        value: 'Keep all content clean and appropriate for all ages.' },
       { name: '4️⃣ No self-promotion',      value: 'Do not advertise other servers, channels, or social media without permission.' },
-      { name: '5️⃣ Use the right language', value: 'Use the appropriate channel. Arabic, French, and English are all welcome.' },
+      { name: '5️⃣ Use the right language', value: 'Arabic, French, and English are all welcome here.' },
       { name: '6️⃣ No spoilers',            value: 'Use spoiler tags when discussing story content in games or shows.' },
       { name: '7️⃣ Follow Discord ToS',     value: "Follow [Discord's Terms of Service](https://discord.com/terms) at all times." },
       { name: '8️⃣ Listen to staff',        value: 'Moderators and Admins have final say. Disrespecting staff = instant ban.' },
@@ -226,11 +237,11 @@ async function postSocials(channel) {
     .setTitle('🔗 L3attaR — All Platforms')
     .setDescription('Follow on every platform to never miss a stream or video!')
     .addFields(
-      { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_) — Live streams',      inline: true },
-      { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR) — Videos & VODs',         inline: true },
-      { name: '📸 Instagram', value: `[instagram.com/l3attar_](${INSTAGRAM}) — Clips`,                       inline: true },
-      { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b) — Short clips',        inline: true },
-      { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/) — Updates',           inline: true },
+      { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_) — Live streams',     inline: true },
+      { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR) — Videos & VODs',        inline: true },
+      { name: '📸 Instagram', value: `[instagram.com/l3attar_](${INSTAGRAM}) — Clips`,                      inline: true },
+      { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b) — Short clips',       inline: true },
+      { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/) — Updates',          inline: true },
     )
     .setFooter({ text: 'Use /socials anytime to see these links' });
   await channel.send({ embeds: [embed] });
