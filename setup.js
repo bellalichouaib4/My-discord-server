@@ -4,34 +4,24 @@ const {
   StringSelectMenuBuilder, StringSelectMenuOptionBuilder
 } = require('discord.js');
 
-// ══════════════════════════════════════════════
-//  ROLES
-// ══════════════════════════════════════════════
+const INSTAGRAM = 'https://www.instagram.com/l3attar/';
+
 const ROLES = [
-  // Gated access
   { name: '🔒 Unverified',     color: '#747F8D', hoist: false, mentionable: false },
   { name: '✅ Membre',          color: '#57F287', hoist: true,  mentionable: false },
-  // Notification opt-in
   { name: '🔔 Stream Alerts',  color: '#9146FF', hoist: false, mentionable: true  },
   { name: '🔔 Video Alerts',   color: '#FF0000', hoist: false, mentionable: true  },
-  // Community
   { name: '🎮 Gamer',          color: '#3498DB', hoist: true,  mentionable: false },
   { name: '📺 Subscriber',     color: '#E67E22', hoist: true,  mentionable: false },
-  { name: '🎖️ VIP',           color: '#F1C40F', hoist: true,  mentionable: false },
-  // Live indicator
+  { name: '🏅 VIP',            color: '#F1C40F', hoist: true,  mentionable: false },
   { name: '🔴 Live Now',       color: '#ED4245', hoist: true,  mentionable: false },
-  // Staff
   { name: '🛡️ Moderateur',    color: '#1ABC9C', hoist: true,  mentionable: true  },
   { name: '⚙️ Admin',         color: '#E74C3C', hoist: true,  mentionable: true  },
 ];
 
-// ══════════════════════════════════════════════
-//  SERVER STRUCTURE
-// ══════════════════════════════════════════════
 const STRUCTURE = [
   {
-    name: '📋 ── INFORMATION',
-    type: 'public',
+    name: '📋 ── INFORMATION', type: 'public',
     channels: [
       { name: '👋・welcome',       type: 'public',  isWelcome: true },
       { name: '📢・announcements', type: 'public',  topic: 'Official announcements from L3attaR' },
@@ -40,15 +30,13 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🔒 ── VERIFICATION',
-    type: 'public',
+    name: '🔒 ── VERIFICATION', type: 'public',
     channels: [
       { name: '🔒・verify',        type: 'public',  isVerify: true },
     ]
   },
   {
-    name: '🔔 ── NOTIFICATIONS',
-    type: 'public',
+    name: '🔔 ── NOTIFICATIONS', type: 'public',
     channels: [
       { name: '🔔・get-notified',  type: 'public',  isNotifPicker: true },
       { name: '📡・stream-alerts', type: 'public',  topic: '🔴 Live stream notifications — l3attar_' },
@@ -56,8 +44,7 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '💬 ── COMMUNITY',
-    type: 'member',
+    name: '💬 ── COMMUNITY', type: 'member',
     channels: [
       { name: '💬・general',        type: 'member', topic: 'General chat — keep it chill 😎' },
       { name: '👋・introductions',  type: 'member', topic: 'New here? Introduce yourself!' },
@@ -67,8 +54,7 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🎮 ── GAMING',
-    type: 'member',
+    name: '🎮 ── GAMING', type: 'member',
     channels: [
       { name: '🎮・gaming-general',   type: 'member', topic: 'All things gaming' },
       { name: '🎯・valorant',         type: 'member', topic: 'Valorant ranked grind 🎯 — tips, clips, comps' },
@@ -78,8 +64,7 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🔴 ── STREAMS',
-    type: 'member',
+    name: '🔴 ── STREAMS', type: 'member',
     channels: [
       { name: '💬・stream-chat',   type: 'member', topic: 'Chat here during live streams!' },
       { name: '🎞️・stream-clips', type: 'member', topic: 'Best moments saved from streams' },
@@ -87,9 +72,7 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🎤 ── VOICE',
-    type: 'member',
-    voice: true,
+    name: '🎤 ── VOICE', type: 'member', voice: true,
     channels: [
       { name: '➕ Create Room',    voice: true, type: 'member' },
       { name: '🔊 Lounge',         voice: true, type: 'member' },
@@ -100,8 +83,7 @@ const STRUCTURE = [
     ]
   },
   {
-    name: '🛡️ ── MODERATION',
-    type: 'admin',
+    name: '🛡️ ── MODERATION', type: 'admin',
     channels: [
       { name: '⚙️・bot-commands',  type: 'admin', topic: 'Run bot commands here' },
       { name: '📋・mod-log',        type: 'admin', topic: 'Auto moderation log' },
@@ -111,34 +93,24 @@ const STRUCTURE = [
   }
 ];
 
-// ══════════════════════════════════════════════
-//  MAIN SETUP FUNCTION
-// ══════════════════════════════════════════════
 module.exports = async function setupGuild(guild) {
   console.log(`\n🔧 Building server: ${guild.name}`);
   await guild.members.fetch();
 
-  // 1. Create roles
   const roleMap = {};
   for (const def of ROLES) {
     let role = guild.roles.cache.find(r => r.name === def.name);
-    if (!role) {
-      role = await guild.roles.create({ name: def.name, color: def.color, hoist: def.hoist, mentionable: def.mentionable });
-      console.log(`  ✅ Role: ${def.name}`);
-    }
+    if (!role) role = await guild.roles.create({ name: def.name, color: def.color, hoist: def.hoist, mentionable: def.mentionable });
     roleMap[def.name] = role;
+    console.log(`  ✅ Role: ${def.name}`);
   }
 
-  // 2. Lock @everyone
   await guild.roles.everyone.setPermissions(0n);
 
-  // 3. Build channels
   for (const cat of STRUCTURE) {
     const catPerms = permsFor(cat.type, roleMap, guild);
     let category = guild.channels.cache.find(c => c.name === cat.name && c.type === ChannelType.GuildCategory);
-    if (!category) {
-      category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory, permissionOverwrites: catPerms });
-    }
+    if (!category) category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory, permissionOverwrites: catPerms });
 
     for (const ch of cat.channels) {
       if (guild.channels.cache.find(c => c.name === ch.name)) { console.log(`  ⏭️  Exists: ${ch.name}`); continue; }
@@ -150,21 +122,17 @@ module.exports = async function setupGuild(guild) {
         topic: ch.topic || undefined,
         permissionOverwrites: chPerms,
       });
-      // Post messages into special channels
-      if (ch.isVerify)       await postVerify(created);
-      if (ch.isRules)        await postRules(created);
-      if (ch.isWelcome)      await postWelcomeInfo(created);
-      if (ch.isSocials)      await postSocials(created);
-      if (ch.isNotifPicker)  await postNotifPicker(created);
+      if (ch.isVerify)      await postVerify(created);
+      if (ch.isRules)       await postRules(created);
+      if (ch.isWelcome)     await postWelcomeInfo(created);
+      if (ch.isSocials)     await postSocials(created);
+      if (ch.isNotifPicker) await postNotifPicker(created);
       console.log(`  📌 ${ch.name}`);
     }
   }
   console.log('\n✅ Server build complete!\n');
 };
 
-// ══════════════════════════════════════════════
-//  PERMISSIONS HELPER
-// ══════════════════════════════════════════════
 function permsFor(type, roleMap, guild) {
   const everyone = guild.roles.everyone.id;
   const member   = roleMap['✅ Membre']?.id;
@@ -184,7 +152,6 @@ function permsFor(type, roleMap, guild) {
     { id: admin,    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageMessages] },
   ].filter(p => p.id);
 
-  // public — everyone can read, only members/mods can type
   return [
     { id: everyone, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
     { id: member,   allow: [PermissionFlagsBits.ViewChannel] },
@@ -193,28 +160,24 @@ function permsFor(type, roleMap, guild) {
   ].filter(p => p.id);
 }
 
-// ══════════════════════════════════════════════
-//  CHANNEL MESSAGE TEMPLATES
-// ══════════════════════════════════════════════
 async function postWelcomeInfo(channel) {
   const embed = new EmbedBuilder()
     .setColor('#9146FF')
     .setTitle('👋 Welcome to the L3attaR Community!')
     .setDescription(
       'This is the **official Discord server** of **L3attaR** — Valorant streamer & content creator.\n\n' +
-      '🔴 **Twitch** → [twitch.tv/l3attar_](https://twitch.tv/l3attar_)\n' +
-      '📺 **YouTube** → [youtube.com/@L3attaR](https://www.youtube.com/@L3attaR)\n' +
-      '📸 **Instagram** → [l3attar_clips](https://www.instagram.com/l3attar_clips/)\n' +
-      '🎵 **TikTok** → [@l3attar_b](https://www.tiktok.com/@l3attar_b)\n' +
-      '📘 **Facebook** → [L3attar01](https://www.facebook.com/L3attar01/)'
+      `🔴 **Twitch** → [twitch.tv/l3attar_](https://twitch.tv/l3attar_)\n` +
+      `📺 **YouTube** → [youtube.com/@L3attaR](https://www.youtube.com/@L3attaR)\n` +
+      `📸 **Instagram** → [instagram.com/l3attar_](${INSTAGRAM})\n` +
+      `🎵 **TikTok** → [@l3attar_b](https://www.tiktok.com/@l3attar_b)\n` +
+      `📘 **Facebook** → [L3attar01](https://www.facebook.com/L3attar01/)`
     )
     .addFields(
       { name: '\u200B', value: '**Getting started:**' },
-      { name: '1️⃣ Read the rules', value: 'Check <#rules> before anything else.', inline: true },
-      { name: '2️⃣ Verify yourself', value: 'Click the button in <#verify> to unlock all channels.', inline: true },
-      { name: '3️⃣ Get notifications', value: 'Choose stream/video alerts in <#get-notified>.', inline: true },
+      { name: '1️⃣ Read the rules',      value: 'Check <#rules> before anything else.',                   inline: true },
+      { name: '2️⃣ Verify yourself',     value: 'Click the button in <#verify> to unlock all channels.',  inline: true },
+      { name: '3️⃣ Get notifications',   value: 'Choose your alerts in <#get-notified>.',                 inline: true },
     )
-    .setImage('https://static-cdn.jtvnw.net/jtv_user_pictures/l3attar_-channel_offline_image-1920x1080.jpeg')
     .setFooter({ text: 'L3attaR Community · Built with ❤️' });
   await channel.send({ embeds: [embed] });
 }
@@ -225,17 +188,17 @@ async function postRules(channel) {
     .setTitle('📜 Server Rules')
     .setDescription('Follow these rules to keep the community fun and respectful for everyone.\n\u200B')
     .addFields(
-      { name: '1️⃣ Respect everyone', value: 'No insults, harassment, hate speech, or discrimination of any kind.' },
-      { name: '2️⃣ No spam', value: 'No repeated messages, wall of text, or excessive emojis.' },
-      { name: '3️⃣ No NSFW content', value: 'Keep all content clean and appropriate for all ages.' },
-      { name: '4️⃣ No self-promotion', value: 'Do not advertise other servers, channels, or social media without permission.' },
-      { name: '5️⃣ Speak the right language', value: 'Use the appropriate channel for Arabic, French, or English.' },
-      { name: '6️⃣ No spoilers', value: 'Use spoiler tags when discussing story content in games or shows.' },
-      { name: '7️⃣ Follow Discord ToS', value: 'You must follow [Discord\'s Terms of Service](https://discord.com/terms) at all times.' },
-      { name: '8️⃣ Listen to staff', value: 'Moderators and Admins have final say. Disrespecting staff = instant ban.' },
-      { name: '\u200B', value: '*Breaking rules = mute, kick, or permanent ban depending on severity.*' },
+      { name: '1️⃣ Respect everyone',      value: 'No insults, harassment, hate speech, or discrimination of any kind.' },
+      { name: '2️⃣ No spam',               value: 'No repeated messages, walls of text, or excessive emojis.' },
+      { name: '3️⃣ No NSFW content',        value: 'Keep all content clean and appropriate for all ages.' },
+      { name: '4️⃣ No self-promotion',      value: 'Do not advertise other servers, channels, or social media without permission.' },
+      { name: '5️⃣ Use the right language', value: 'Use the appropriate channel. Arabic, French, and English are all welcome.' },
+      { name: '6️⃣ No spoilers',            value: 'Use spoiler tags when discussing story content in games or shows.' },
+      { name: '7️⃣ Follow Discord ToS',     value: "Follow [Discord's Terms of Service](https://discord.com/terms) at all times." },
+      { name: '8️⃣ Listen to staff',        value: 'Moderators and Admins have final say. Disrespecting staff = instant ban.' },
+      { name: '\u200B',                     value: '*Breaking rules = mute, kick, or permanent ban depending on severity.*' },
     )
-    .setFooter({ text: 'Last updated by L3attaR · Rules apply to all members' });
+    .setFooter({ text: 'Rules apply to all members without exception' });
   await channel.send({ embeds: [embed] });
 }
 
@@ -252,10 +215,7 @@ async function postVerify(channel) {
     )
     .setFooter({ text: 'L3attaR Community · Verification Gate' });
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('verify_btn')
-      .setLabel('✅  I Agree — Verify Me')
-      .setStyle(ButtonStyle.Success)
+    new ButtonBuilder().setCustomId('verify_btn').setLabel('✅  I Agree — Verify Me').setStyle(ButtonStyle.Success)
   );
   await channel.send({ embeds: [embed], components: [row] });
 }
@@ -266,11 +226,11 @@ async function postSocials(channel) {
     .setTitle('🔗 L3attaR — All Platforms')
     .setDescription('Follow on every platform to never miss a stream or video!')
     .addFields(
-      { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_) — Live streams',       inline: true },
-      { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR) — Videos & VODs',          inline: true },
-      { name: '📸 Instagram', value: '[l3attar_clips](https://www.instagram.com/l3attar_clips/) — Clips',     inline: true },
-      { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b) — Short clips',         inline: true },
-      { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/) — Updates',            inline: true },
+      { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_) — Live streams',      inline: true },
+      { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR) — Videos & VODs',         inline: true },
+      { name: '📸 Instagram', value: `[instagram.com/l3attar_](${INSTAGRAM}) — Clips`,                       inline: true },
+      { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b) — Short clips',        inline: true },
+      { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/) — Updates',           inline: true },
     )
     .setFooter({ text: 'Use /socials anytime to see these links' });
   await channel.send({ embeds: [embed] });
@@ -293,16 +253,8 @@ async function postNotifPicker(channel) {
     .setMinValues(0)
     .setMaxValues(2)
     .addOptions(
-      new StringSelectMenuOptionBuilder()
-        .setLabel('🟣 Stream Alerts')
-        .setDescription('Ping when L3attaR goes live on Twitch')
-        .setValue('stream')
-        .setEmoji('🟣'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('🔴 Video Alerts')
-        .setDescription('Ping when a new YouTube video drops')
-        .setValue('video')
-        .setEmoji('🔴'),
+      new StringSelectMenuOptionBuilder().setLabel('🟣 Stream Alerts').setDescription('Ping when L3attaR goes live on Twitch').setValue('stream').setEmoji('🟣'),
+      new StringSelectMenuOptionBuilder().setLabel('🔴 Video Alerts').setDescription('Ping when a new YouTube video drops').setValue('video').setEmoji('🔴'),
     );
   await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] });
 }
