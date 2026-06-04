@@ -4,7 +4,7 @@ const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Events,
   PermissionFlagsBits, REST, Routes, SlashCommandBuilder,
   ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
-  ChannelType, Collection,
+  ChannelType, Collection, MessageFlags,
 } = require('discord.js');
 const axios  = require('axios');
 const Parser = require('rss-parser');
@@ -16,7 +16,7 @@ const { GAME_ROLES } = require('./commands/gameroles');
 const { queues, getQueue, playSong } = require('./commands/music');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
-const GUILD_ID  = config.guildId; // 661958063443410966
+const GUILD_ID  = config.guildId;
 
 const client = new Client({
   intents: [
@@ -31,14 +31,14 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
 });
 
-// ── Load commands from commands/ folder
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
 if (fs.existsSync(commandsPath)) {
   for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
     const mod = require(path.join(commandsPath, file));
-    // support both single export and array of commands (music.js)
-    const cmds = Array.isArray(mod.data) ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i) })) : (mod?.data && mod?.execute ? [mod] : []);
+    const cmds = Array.isArray(mod.data)
+      ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i) }))
+      : (mod?.data && mod?.execute ? [mod] : []);
     for (const cmd of cmds) client.commands.set(cmd.data.name, cmd);
   }
 }
@@ -52,7 +52,7 @@ client.once(Events.ClientReady, async () => {
   client.user.setActivity('🔴 twitch.tv/l3attar_', { type: ActivityType.Streaming, url: 'https://twitch.tv/l3attar_' });
   await registerCommands();
   const hasYT = config.youtube?.channelId && !config.youtube.channelId.startsWith('YOUR');
-  const hasTW = config.twitch?.clientId && !config.twitch.clientId.startsWith('YOUR');
+  const hasTW = config.twitch?.clientId  && !config.twitch.clientId.startsWith('YOUR');
   if (hasTW) startTwitchPolling(); else console.log('⚠️  Twitch keys not set — polling skipped');
   if (hasYT) startYouTubePolling(); else console.log('⚠️  YouTube channel ID not set — polling skipped');
 });
@@ -91,7 +91,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
       );
       await welcomeCh.send({ content: `Hey ${member}! 👋`, embeds: [embed], components: [row] });
     }
-
     try {
       const dmEmbed = new EmbedBuilder()
         .setColor('#9146FF')
@@ -114,7 +113,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
         .setTimestamp();
       await member.user.send({ embeds: [dmEmbed] });
     } catch (_) {}
-
   } catch (e) { console.error('[Welcome]', e.message); }
 });
 
@@ -170,18 +168,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const memberRole = guild.roles.cache.find(r => r.name === '✅ Membre');
       const unverRole  = guild.roles.cache.find(r => r.name === '🔒 Unverified');
       if (memberRole && member.roles.cache.has(memberRole.id))
-        return interaction.reply({ content: '✅ You are already verified!', ephemeral: true });
+        return interaction.reply({ content: '✅ You are already verified!', flags: MessageFlags.Ephemeral });
       if (memberRole)  await member.roles.add(memberRole).catch(() => {});
       if (unverRole)   await member.roles.remove(unverRole).catch(() => {});
-      return interaction.reply({ content: '✅ **Verified!** Welcome to the L3attaR community — all channels are now unlocked! 🎉', ephemeral: true });
+      return interaction.reply({ content: '✅ **Verified!** Welcome to the L3attaR community — all channels are now unlocked! 🎉', flags: MessageFlags.Ephemeral });
     }
 
     // ── Button: music controls
     if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
       const q = getQueue(interaction.guild.id);
-      if (interaction.customId === 'music_skip')  { q.player?.stop();  await interaction.reply({ content: '⏭️ Skipped!', ephemeral: true }); }
-      if (interaction.customId === 'music_stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(interaction.guild.id); await interaction.reply({ content: '⏹️ Stopped!', ephemeral: true }); }
-      if (interaction.customId === 'music_pause') { q.player?.pause(); await interaction.reply({ content: '⏸️ Paused! Use `/resume` to continue.', ephemeral: true }); }
+      if (interaction.customId === 'music_skip')  { q.player?.stop();  await interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(interaction.guild.id); await interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_pause') { q.player?.pause(); await interaction.reply({ content: '⏸️ Paused! Use `/resume` to continue.', flags: MessageFlags.Ephemeral }); }
       return;
     }
 
@@ -194,43 +192,48 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (streamRole) sel.includes('stream') ? await member.roles.add(streamRole).catch(() => {}) : await member.roles.remove(streamRole).catch(() => {});
       if (videoRole)  sel.includes('video')  ? await member.roles.add(videoRole).catch(() => {})  : await member.roles.remove(videoRole).catch(() => {});
       const labels = sel.map(s => s === 'stream' ? '🔔 Stream Alerts' : '🔔 Video Alerts');
-      return interaction.reply({ content: sel.length ? `✅ You now have: **${labels.join(', ')}**` : '✅ All notifications removed.', ephemeral: true });
+      return interaction.reply({ content: sel.length ? `✅ You now have: **${labels.join(', ')}**` : '✅ All notifications removed.', flags: MessageFlags.Ephemeral });
     }
 
-    // ── Select menu: game roles
+    // ── Select menu: game roles (deferred to avoid 3s timeout)
     if (interaction.isStringSelectMenu() && interaction.customId === 'game_roles') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const { guild, member } = interaction;
       const selected = interaction.values;
       const assigned = [], removed = [];
       for (const game of GAME_ROLES) {
         let role = guild.roles.cache.find(r => r.name === game.label);
-        if (!role) role = await guild.roles.create({ name: game.label, color: game.color, hoist: false, mentionable: false }).catch(() => null);
+        if (!role) {
+          role = await guild.roles.create({ name: game.label, colors: [game.color], hoist: false, mentionable: false }).catch(() => null);
+        }
         if (!role) continue;
         if (selected.includes(game.value)) { await member.roles.add(role).catch(() => {}); assigned.push(game.label); }
         else { await member.roles.remove(role).catch(() => {}); removed.push(game.label); }
       }
-      const msg = assigned.length ? `✅ Game roles updated!\n**Added:** ${assigned.join(', ')}${removed.length ? `\n**Removed:** ${removed.join(', ')}` : ''}` : '✅ All game roles removed.';
-      return interaction.reply({ content: msg, ephemeral: true });
+      const msg = assigned.length
+        ? `✅ Game roles updated!\n**Added:** ${assigned.join(', ')}${removed.length ? `\n**Removed:** ${removed.join(', ')}` : ''}`
+        : '✅ All game roles removed.';
+      return interaction.editReply({ content: msg });
     }
 
     if (!interaction.isChatInputCommand()) return;
 
-    // ── Dynamic command dispatch (includes music + rank + gameroles)
+    // ── Dynamic command dispatch
     const cmd = client.commands.get(interaction.commandName);
     if (cmd) return await cmd.execute(interaction);
 
     // ── Built-in commands
     if (interaction.commandName === 'setup') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
-        return interaction.reply({ content: '❌ Administrator permission required.', ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
+        return interaction.reply({ content: '❌ Administrator permission required.', flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await setupGuild(interaction.guild);
       return interaction.editReply('✅ Server fully set up!');
     }
     if (interaction.commandName === 'resetserver') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
-        return interaction.reply({ content: '❌ Administrator permission required.', ephemeral: true });
-      await interaction.deferReply({ ephemeral: true });
+        return interaction.reply({ content: '❌ Administrator permission required.', flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const guild = interaction.guild;
       for (const [, ch] of guild.channels.cache) await ch.delete().catch(() => {});
       for (const [, r] of guild.roles.cache) { if (r.id !== guild.roles.everyone.id && !r.managed) await r.delete().catch(() => {}); }
@@ -239,9 +242,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.commandName === 'live') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
-        return interaction.reply({ content: '❌ Manage Messages permission required.', ephemeral: true });
+        return interaction.reply({ content: '❌ Manage Messages permission required.', flags: MessageFlags.Ephemeral });
       await announceStream(interaction.guild, { user_name: 'l3attar_', title: interaction.options.getString('title') || '🔴 Come watch — live now!', game_name: interaction.options.getString('game') || 'Valorant', viewer_count: 0 });
-      return interaction.reply({ content: '✅ Stream announced!', ephemeral: true });
+      return interaction.reply({ content: '✅ Stream announced!', flags: MessageFlags.Ephemeral });
     }
     if (interaction.commandName === 'socials') {
       const embed = new EmbedBuilder().setColor('#9146FF').setTitle('🔗 L3attaR — All Socials')
@@ -342,11 +345,8 @@ async function registerCommands() {
       .addStringOption(o => o.setName('game').setDescription('Game being played')),
     new SlashCommandBuilder().setName('socials').setDescription('🔗 Show all L3attaR social links'),
   ].map(c => c.toJSON());
-
   const allCmds = [...builtinCmds, ...dynamicCmds];
   const rest = new REST().setToken(process.env.BOT_TOKEN);
-
-  // ── Guild-scoped = INSTANT sync (no 1-hour wait)
   await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: allCmds });
   console.log(`⚡ Slash commands ready (${allCmds.length} total) — guild-scoped → instant!`);
 }
