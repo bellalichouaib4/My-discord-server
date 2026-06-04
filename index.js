@@ -12,6 +12,7 @@ const fs     = require('fs');
 const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
+const { GAME_ROLES } = require('./commands/gameroles');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
 
@@ -185,6 +186,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: sel.length ? `✅ You now have: **${labels.join(', ')}**` : '✅ All notifications removed.', ephemeral: true });
     }
 
+    // ── Select menu: game roles
+    if (interaction.isStringSelectMenu() && interaction.customId === 'game_roles') {
+      const { guild, member } = interaction;
+      const selected = interaction.values;
+      const assigned = [];
+      const removed  = [];
+
+      for (const game of GAME_ROLES) {
+        // Auto-create role if it doesn't exist yet
+        let role = guild.roles.cache.find(r => r.name === game.label);
+        if (!role) {
+          role = await guild.roles.create({
+            name: game.label,
+            color: game.color,
+            hoist: false,
+            mentionable: false,
+          }).catch(() => null);
+        }
+        if (!role) continue;
+        if (selected.includes(game.value)) {
+          await member.roles.add(role).catch(() => {});
+          assigned.push(game.label);
+        } else {
+          await member.roles.remove(role).catch(() => {});
+          removed.push(game.label);
+        }
+      }
+
+      const msg = assigned.length
+        ? `✅ Game roles updated!\n**Added:** ${assigned.join(', ')}${removed.length ? `\n**Removed:** ${removed.join(', ')}` : ''}`
+        : '✅ All game roles removed.';
+      return interaction.reply({ content: msg, ephemeral: true });
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     // ── Dynamic command dispatch
@@ -338,7 +373,6 @@ function startYouTubePolling() {
 }
 
 async function registerCommands() {
-  // Collect commands from commands/ folder
   const dynamicCmds = [];
   if (fs.existsSync(commandsPath)) {
     for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
@@ -346,8 +380,6 @@ async function registerCommands() {
       if (cmd?.data) dynamicCmds.push(cmd.data.toJSON());
     }
   }
-
-  // Built-in commands
   const builtinCmds = [
     new SlashCommandBuilder().setName('setup').setDescription('🔧 Build the full server (Admin only)'),
     new SlashCommandBuilder().setName('resetserver').setDescription('🔄 Wipe and rebuild server (Admin only)'),
@@ -356,7 +388,6 @@ async function registerCommands() {
       .addStringOption(o => o.setName('game').setDescription('Game being played')),
     new SlashCommandBuilder().setName('socials').setDescription('🔗 Show all L3attaR social links'),
   ].map(c => c.toJSON());
-
   const allCmds = [...builtinCmds, ...dynamicCmds];
   const rest = new REST().setToken(process.env.BOT_TOKEN);
   await rest.put(Routes.applicationCommands(client.user.id), { body: allCmds });
