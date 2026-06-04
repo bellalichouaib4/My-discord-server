@@ -14,6 +14,7 @@ const config = require('./config.json');
 const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
 const { queues, getQueue, playSong } = require('./commands/music');
+const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
 const GUILD_ID  = config.guildId;
@@ -55,10 +56,21 @@ client.once(Events.ClientReady, async () => {
   const hasTW = config.twitch?.clientId  && !config.twitch.clientId.startsWith('YOUR');
   if (hasTW) startTwitchPolling(); else console.log('⚠️  Twitch keys not set — polling skipped');
   if (hasYT) startYouTubePolling(); else console.log('⚠️  YouTube channel ID not set — polling skipped');
+  console.log('🛡️  AutoMod active — anti-spam, bad words, invites, anti-raid');
+});
+
+// ── AutoMod: message scanning
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  handleAntiSpam(message);
+  await handleBadWords(message);
+  await handleInviteLinks(message);
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
+    handleAntiRaid(member);
+
     const guild = member.guild;
     const unverRole = guild.roles.cache.find(r => r.name === '🔒 Unverified');
     if (unverRole) await member.roles.add(unverRole).catch(() => {});
@@ -195,7 +207,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: sel.length ? `✅ You now have: **${labels.join(', ')}**` : '✅ All notifications removed.', flags: MessageFlags.Ephemeral });
     }
 
-    // ── Select menu: game roles (deferred to avoid 3s timeout)
+    // ── Select menu: game roles
     if (interaction.isStringSelectMenu() && interaction.customId === 'game_roles') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const { guild, member } = interaction;
@@ -203,9 +215,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const assigned = [], removed = [];
       for (const game of GAME_ROLES) {
         let role = guild.roles.cache.find(r => r.name === game.label);
-        if (!role) {
-          role = await guild.roles.create({ name: game.label, colors: [game.color], hoist: false, mentionable: false }).catch(() => null);
-        }
+        if (!role) role = await guild.roles.create({ name: game.label, colors: [game.color], hoist: false, mentionable: false }).catch(() => null);
         if (!role) continue;
         if (selected.includes(game.value)) { await member.roles.add(role).catch(() => {}); assigned.push(game.label); }
         else { await member.roles.remove(role).catch(() => {}); removed.push(game.label); }
@@ -256,6 +266,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
           { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/)',  inline: true },
         ).setFooter({ text: 'Follow for streams, clips & highlights!' });
       return interaction.reply({ embeds: [embed] });
+    }
+    if (interaction.commandName === 'unlock') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
+        return interaction.reply({ content: '❌ Administrator permission required.', flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await unlockServer(interaction.guild);
+      return interaction.editReply('✅ Server unlocked!');
     }
   } catch (e) { console.error('[Interaction]', e.message); }
 });
@@ -344,6 +361,7 @@ async function registerCommands() {
       .addStringOption(o => o.setName('title').setDescription('Stream title'))
       .addStringOption(o => o.setName('game').setDescription('Game being played')),
     new SlashCommandBuilder().setName('socials').setDescription('🔗 Show all L3attaR social links'),
+    new SlashCommandBuilder().setName('unlock').setDescription('🔓 Lift raid lockdown (Admin only)'),
   ].map(c => c.toJSON());
   const allCmds = [...builtinCmds, ...dynamicCmds];
   const rest = new REST().setToken(process.env.BOT_TOKEN);
