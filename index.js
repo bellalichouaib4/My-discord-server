@@ -13,8 +13,10 @@ const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
+const { queues, getQueue, playSong } = require('./commands/music');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
+const GUILD_ID  = config.guildId; // 661958063443410966
 
 const client = new Client({
   intents: [
@@ -34,8 +36,10 @@ client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
 if (fs.existsSync(commandsPath)) {
   for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
-    const cmd = require(path.join(commandsPath, file));
-    if (cmd?.data && cmd?.execute) client.commands.set(cmd.data.name, cmd);
+    const mod = require(path.join(commandsPath, file));
+    // support both single export and array of commands (music.js)
+    const cmds = Array.isArray(mod.data) ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i) })) : (mod?.data && mod?.execute ? [mod] : []);
+    for (const cmd of cmds) client.commands.set(cmd.data.name, cmd);
   }
 }
 
@@ -59,7 +63,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
     const unverRole = guild.roles.cache.find(r => r.name === '🔒 Unverified');
     if (unverRole) await member.roles.add(unverRole).catch(() => {});
 
-    // ── Channel welcome message
     const welcomeCh = guild.channels.cache.find(c => c.name === '👋・welcome');
     if (welcomeCh) {
       const verifyId = guild.channels.cache.find(c => c.name === '🔒・verify')?.id;
@@ -89,7 +92,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
       await welcomeCh.send({ content: `Hey ${member}! 👋`, embeds: [embed], components: [row] });
     }
 
-    // ── Private DM welcome
     try {
       const dmEmbed = new EmbedBuilder()
         .setColor('#9146FF')
@@ -111,7 +113,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
         .setFooter({ text: 'L3attaR Community · Built with ❤️' })
         .setTimestamp();
       await member.user.send({ embeds: [dmEmbed] });
-    } catch (_) { /* DMs disabled — silently skip */ }
+    } catch (_) {}
 
   } catch (e) { console.error('[Welcome]', e.message); }
 });
@@ -174,6 +176,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: '✅ **Verified!** Welcome to the L3attaR community — all channels are now unlocked! 🎉', ephemeral: true });
     }
 
+    // ── Button: music controls
+    if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
+      const q = getQueue(interaction.guild.id);
+      if (interaction.customId === 'music_skip')  { q.player?.stop();  await interaction.reply({ content: '⏭️ Skipped!', ephemeral: true }); }
+      if (interaction.customId === 'music_stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(interaction.guild.id); await interaction.reply({ content: '⏹️ Stopped!', ephemeral: true }); }
+      if (interaction.customId === 'music_pause') { q.player?.pause(); await interaction.reply({ content: '⏸️ Paused! Use `/resume` to continue.', ephemeral: true }); }
+      return;
+    }
+
     // ── Select menu: notification roles
     if (interaction.isStringSelectMenu() && interaction.customId === 'notif_roles') {
       const { guild, member } = interaction;
@@ -190,39 +201,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isStringSelectMenu() && interaction.customId === 'game_roles') {
       const { guild, member } = interaction;
       const selected = interaction.values;
-      const assigned = [];
-      const removed  = [];
-
+      const assigned = [], removed = [];
       for (const game of GAME_ROLES) {
-        // Auto-create role if it doesn't exist yet
         let role = guild.roles.cache.find(r => r.name === game.label);
-        if (!role) {
-          role = await guild.roles.create({
-            name: game.label,
-            color: game.color,
-            hoist: false,
-            mentionable: false,
-          }).catch(() => null);
-        }
+        if (!role) role = await guild.roles.create({ name: game.label, color: game.color, hoist: false, mentionable: false }).catch(() => null);
         if (!role) continue;
-        if (selected.includes(game.value)) {
-          await member.roles.add(role).catch(() => {});
-          assigned.push(game.label);
-        } else {
-          await member.roles.remove(role).catch(() => {});
-          removed.push(game.label);
-        }
+        if (selected.includes(game.value)) { await member.roles.add(role).catch(() => {}); assigned.push(game.label); }
+        else { await member.roles.remove(role).catch(() => {}); removed.push(game.label); }
       }
-
-      const msg = assigned.length
-        ? `✅ Game roles updated!\n**Added:** ${assigned.join(', ')}${removed.length ? `\n**Removed:** ${removed.join(', ')}` : ''}`
-        : '✅ All game roles removed.';
+      const msg = assigned.length ? `✅ Game roles updated!\n**Added:** ${assigned.join(', ')}${removed.length ? `\n**Removed:** ${removed.join(', ')}` : ''}` : '✅ All game roles removed.';
       return interaction.reply({ content: msg, ephemeral: true });
     }
 
     if (!interaction.isChatInputCommand()) return;
 
-    // ── Dynamic command dispatch
+    // ── Dynamic command dispatch (includes music + rank + gameroles)
     const cmd = client.commands.get(interaction.commandName);
     if (cmd) return await cmd.execute(interaction);
 
@@ -234,42 +227,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await setupGuild(interaction.guild);
       return interaction.editReply('✅ Server fully set up!');
     }
-
     if (interaction.commandName === 'resetserver') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
         return interaction.reply({ content: '❌ Administrator permission required.', ephemeral: true });
       await interaction.deferReply({ ephemeral: true });
       const guild = interaction.guild;
-      for (const [, ch] of guild.channels.cache)   await ch.delete().catch(() => {});
-      for (const [, r]  of guild.roles.cache) {
-        if (r.id !== guild.roles.everyone.id && !r.managed) await r.delete().catch(() => {});
-      }
+      for (const [, ch] of guild.channels.cache) await ch.delete().catch(() => {});
+      for (const [, r] of guild.roles.cache) { if (r.id !== guild.roles.everyone.id && !r.managed) await r.delete().catch(() => {}); }
       await setupGuild(guild);
       return interaction.editReply('✅ Server wiped and rebuilt from scratch!');
     }
-
     if (interaction.commandName === 'live') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
         return interaction.reply({ content: '❌ Manage Messages permission required.', ephemeral: true });
-      await announceStream(interaction.guild, {
-        user_name: 'l3attar_',
-        title:     interaction.options.getString('title') || '🔴 Come watch — live now!',
-        game_name: interaction.options.getString('game')  || 'Valorant',
-        viewer_count: 0,
-      });
+      await announceStream(interaction.guild, { user_name: 'l3attar_', title: interaction.options.getString('title') || '🔴 Come watch — live now!', game_name: interaction.options.getString('game') || 'Valorant', viewer_count: 0 });
       return interaction.reply({ content: '✅ Stream announced!', ephemeral: true });
     }
-
     if (interaction.commandName === 'socials') {
-      const embed = new EmbedBuilder()
-        .setColor('#9146FF')
-        .setTitle('🔗 L3attaR — All Socials')
+      const embed = new EmbedBuilder().setColor('#9146FF').setTitle('🔗 L3attaR — All Socials')
         .addFields(
-          { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_)',       inline: true },
-          { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR)',            inline: true },
-          { name: '📸 Instagram', value: `[l3attar](${INSTAGRAM})`,                                inline: true },
-          { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b)',        inline: true },
-          { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/)',        inline: true },
+          { name: '🔴 Twitch',    value: '[twitch.tv/l3attar_](https://twitch.tv/l3attar_)', inline: true },
+          { name: '📺 YouTube',   value: '[@L3attaR](https://www.youtube.com/@L3attaR)',      inline: true },
+          { name: '📸 Instagram', value: `[l3attar](${INSTAGRAM})`,                          inline: true },
+          { name: '🎵 TikTok',    value: '[@l3attar_b](https://www.tiktok.com/@l3attar_b)',  inline: true },
+          { name: '📘 Facebook',  value: '[L3attar01](https://www.facebook.com/L3attar01/)',  inline: true },
         ).setFooter({ text: 'Follow for streams, clips & highlights!' });
       return interaction.reply({ embeds: [embed] });
     }
@@ -293,27 +274,19 @@ async function checkTwitch() {
     if (!guild) return;
     if (stream && !wasLive) { wasLive = true;  await announceStream(guild, stream); }
     if (!stream && wasLive) { wasLive = false; await announceStreamEnd(guild); }
-  } catch (e) {
-    if (e.response?.status === 401) twitchToken = null;
-  }
+  } catch (e) { if (e.response?.status === 401) twitchToken = null; }
 }
 async function announceStream(guild, stream) {
   const ch = guild.channels.cache.find(c => c.name === '📡・stream-alerts');
   if (!ch) return;
   const role = guild.roles.cache.find(r => r.name === '🔔 Stream Alerts');
   const ping = role ? `<@&${role.id}>` : '@everyone';
-  const embed = new EmbedBuilder()
-    .setColor('#9146FF')
-    .setTitle(`🔴 L3attaR is LIVE!`)
+  const embed = new EmbedBuilder().setColor('#9146FF').setTitle('🔴 L3attaR is LIVE!')
     .setDescription(`**${stream.title}**`)
-    .addFields(
-      { name: '🎮 Playing', value: stream.game_name || 'Valorant', inline: true },
-      { name: '👥 Viewers', value: String(stream.viewer_count ?? 0), inline: true },
-    )
+    .addFields({ name: '🎮 Playing', value: stream.game_name || 'Valorant', inline: true }, { name: '👥 Viewers', value: String(stream.viewer_count ?? 0), inline: true })
     .setURL('https://twitch.tv/l3attar_')
     .setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_l3attar_-1280x720.jpg?v=${Date.now()}`)
-    .setFooter({ text: 'L3attaR · Valorant Streamer · twitch.tv/l3attar_' })
-    .setTimestamp();
+    .setFooter({ text: 'L3attaR · Valorant Streamer · twitch.tv/l3attar_' }).setTimestamp();
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setLabel('Watch Live 🔴').setStyle(ButtonStyle.Link).setURL('https://twitch.tv/l3attar_'),
     new ButtonBuilder().setLabel('YouTube 📺').setStyle(ButtonStyle.Link).setURL('https://www.youtube.com/@L3attaR'),
@@ -324,23 +297,13 @@ async function announceStream(guild, stream) {
 async function announceStreamEnd(guild) {
   const ch = guild.channels.cache.find(c => c.name === '📡・stream-alerts');
   if (!ch) return;
-  const embed = new EmbedBuilder()
-    .setColor('#6441a5')
-    .setTitle('📴 Stream Ended')
-    .setDescription('Thanks for watching! Catch the VOD on [YouTube](https://www.youtube.com/@L3attaR) soon. 🎬')
-    .setFooter({ text: 'L3attaR · See you next time!' })
-    .setTimestamp();
-  await ch.send({ embeds: [embed] });
+  await ch.send({ embeds: [new EmbedBuilder().setColor('#6441a5').setTitle('📴 Stream Ended').setDescription('Thanks for watching! Catch the VOD on [YouTube](https://www.youtube.com/@L3attaR) soon. 🎬').setFooter({ text: 'L3attaR · See you next time!' }).setTimestamp()] });
 }
-function startTwitchPolling() {
-  checkTwitch();
-  setInterval(checkTwitch, 2 * 60 * 1000);
-  console.log('📡 Twitch polling active → l3attar_');
-}
+function startTwitchPolling() { checkTwitch(); setInterval(checkTwitch, 2 * 60 * 1000); console.log('📡 Twitch polling active → l3attar_'); }
 
 async function checkYouTube() {
   try {
-    const feed   = await rss.parseURL(`https://www.youtube.com/feeds/videos.xml?channel_id=${config.youtube.channelId}`);
+    const feed = await rss.parseURL(`https://www.youtube.com/feeds/videos.xml?channel_id=${config.youtube.channelId}`);
     const latest = feed.items[0];
     if (!latest || latest.id === lastVideoId) return;
     lastVideoId = latest.id;
@@ -352,13 +315,7 @@ async function checkYouTube() {
     const ping = role ? `<@&${role.id}>` : '';
     const vid   = latest.id.split(':').pop();
     const thumb = latest['media:group']?.['media:thumbnail']?.[0]?.['$']?.url || `https://i.ytimg.com/vi/${vid}/maxresdefault.jpg`;
-    const embed = new EmbedBuilder()
-      .setColor('#FF0000')
-      .setTitle(latest.title)
-      .setURL(latest.link)
-      .setImage(thumb)
-      .setFooter({ text: 'L3attaR · YouTube' })
-      .setTimestamp(new Date(latest.pubDate));
+    const embed = new EmbedBuilder().setColor('#FF0000').setTitle(latest.title).setURL(latest.link).setImage(thumb).setFooter({ text: 'L3attaR · YouTube' }).setTimestamp(new Date(latest.pubDate));
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Watch ▶️').setStyle(ButtonStyle.Link).setURL(latest.link),
       new ButtonBuilder().setLabel('Subscribe 🔔').setStyle(ButtonStyle.Link).setURL('https://www.youtube.com/@L3attaR?sub_confirmation=1'),
@@ -366,18 +323,15 @@ async function checkYouTube() {
     await ch.send({ content: `${ping} 📺 **New video just dropped!**`, embeds: [embed], components: [row] });
   } catch (e) { console.error('[YouTube]', e.message); }
 }
-function startYouTubePolling() {
-  checkYouTube();
-  setInterval(checkYouTube, 10 * 60 * 1000);
-  console.log('📺 YouTube polling active → @L3attaR');
-}
+function startYouTubePolling() { checkYouTube(); setInterval(checkYouTube, 10 * 60 * 1000); console.log('📺 YouTube polling active → @L3attaR'); }
 
 async function registerCommands() {
   const dynamicCmds = [];
   if (fs.existsSync(commandsPath)) {
     for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
-      const cmd = require(path.join(commandsPath, file));
-      if (cmd?.data) dynamicCmds.push(cmd.data.toJSON());
+      const mod = require(path.join(commandsPath, file));
+      if (Array.isArray(mod.data)) dynamicCmds.push(...mod.data.map(d => d.toJSON()));
+      else if (mod?.data) dynamicCmds.push(mod.data.toJSON());
     }
   }
   const builtinCmds = [
@@ -388,10 +342,13 @@ async function registerCommands() {
       .addStringOption(o => o.setName('game').setDescription('Game being played')),
     new SlashCommandBuilder().setName('socials').setDescription('🔗 Show all L3attaR social links'),
   ].map(c => c.toJSON());
+
   const allCmds = [...builtinCmds, ...dynamicCmds];
   const rest = new REST().setToken(process.env.BOT_TOKEN);
-  await rest.put(Routes.applicationCommands(client.user.id), { body: allCmds });
-  console.log(`⚡ Slash commands ready (${allCmds.length} total)`);
+
+  // ── Guild-scoped = INSTANT sync (no 1-hour wait)
+  await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: allCmds });
+  console.log(`⚡ Slash commands ready (${allCmds.length} total) — guild-scoped → instant!`);
 }
 
 client.login(process.env.BOT_TOKEN);
