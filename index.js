@@ -4,10 +4,12 @@ const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Events,
   PermissionFlagsBits, REST, Routes, SlashCommandBuilder,
   ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
-  ChannelType
+  ChannelType, Collection,
 } = require('discord.js');
 const axios  = require('axios');
 const Parser = require('rss-parser');
+const fs     = require('fs');
+const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
 
@@ -25,6 +27,16 @@ const client = new Client({
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
 });
+
+// ── Load commands from commands/ folder
+client.commands = new Collection();
+const commandsPath = path.join(__dirname, 'commands');
+if (fs.existsSync(commandsPath)) {
+  for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
+    const cmd = require(path.join(commandsPath, file));
+    if (cmd?.data && cmd?.execute) client.commands.set(cmd.data.name, cmd);
+  }
+}
 
 let twitchToken = null, wasLive = false, lastVideoId = null;
 const rss = new Parser();
@@ -45,33 +57,61 @@ client.on(Events.GuildMemberAdd, async (member) => {
     const guild = member.guild;
     const unverRole = guild.roles.cache.find(r => r.name === '🔒 Unverified');
     if (unverRole) await member.roles.add(unverRole).catch(() => {});
+
+    // ── Channel welcome message
     const welcomeCh = guild.channels.cache.find(c => c.name === '👋・welcome');
-    if (!welcomeCh) return;
-    const verifyId = guild.channels.cache.find(c => c.name === '🔒・verify')?.id;
-    const rulesId  = guild.channels.cache.find(c => c.name === '📜・rules')?.id;
-    const embed = new EmbedBuilder()
-      .setColor('#9146FF')
-      .setAuthor({ name: 'L3attaR Community', iconURL: guild.iconURL() ?? undefined })
-      .setTitle(`👋 Welcome, ${member.displayName}!`)
-      .setDescription(
-        `You just joined **${guild.name}** — the official community of **L3attaR**! 🎮\n\n` +
-        `**Before you can chat, you need to verify:**\n` +
-        `${verifyId ? `> 🔒 Head to <#${verifyId}> and click **Verify Me**` : ''}\n\n` +
-        `${rulesId  ? `> 📜 Read the rules at <#${rulesId}> first` : ''}\n\n` +
-        `**Follow L3attaR:**\n` +
-        `🔴 [Twitch](https://twitch.tv/l3attar_) · ` +
-        `📺 [YouTube](https://www.youtube.com/@L3attaR) · ` +
-        `📸 [Instagram](${INSTAGRAM}) · ` +
-        `🎵 [TikTok](https://www.tiktok.com/@l3attar_b)`
-      )
-      .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
-      .setFooter({ text: `Member #${guild.memberCount}` })
-      .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('Verify Now 🔒').setStyle(ButtonStyle.Success).setCustomId('verify_btn'),
-      new ButtonBuilder().setLabel('Watch Live 🔴').setStyle(ButtonStyle.Link).setURL('https://twitch.tv/l3attar_'),
-    );
-    await welcomeCh.send({ content: `Hey ${member}! 👋`, embeds: [embed], components: [row] });
+    if (welcomeCh) {
+      const verifyId = guild.channels.cache.find(c => c.name === '🔒・verify')?.id;
+      const rulesId  = guild.channels.cache.find(c => c.name === '📜・rules')?.id;
+      const embed = new EmbedBuilder()
+        .setColor('#9146FF')
+        .setAuthor({ name: 'L3attaR Community', iconURL: guild.iconURL() ?? undefined })
+        .setTitle(`👋 Welcome, ${member.displayName}!`)
+        .setDescription(
+          `You just joined **${guild.name}** — the official community of **L3attaR**! 🎮\n\n` +
+          `**Before you can chat, you need to verify:**\n` +
+          `${verifyId ? `> 🔒 Head to <#${verifyId}> and click **Verify Me**` : ''}\n\n` +
+          `${rulesId  ? `> 📜 Read the rules at <#${rulesId}> first` : ''}\n\n` +
+          `**Follow L3attaR:**\n` +
+          `🔴 [Twitch](https://twitch.tv/l3attar_) · ` +
+          `📺 [YouTube](https://www.youtube.com/@L3attaR) · ` +
+          `📸 [Instagram](${INSTAGRAM}) · ` +
+          `🎵 [TikTok](https://www.tiktok.com/@l3attar_b)`
+        )
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .setFooter({ text: `Member #${guild.memberCount}` })
+        .setTimestamp();
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('Verify Now 🔒').setStyle(ButtonStyle.Success).setCustomId('verify_btn'),
+        new ButtonBuilder().setLabel('Watch Live 🔴').setStyle(ButtonStyle.Link).setURL('https://twitch.tv/l3attar_'),
+      );
+      await welcomeCh.send({ content: `Hey ${member}! 👋`, embeds: [embed], components: [row] });
+    }
+
+    // ── Private DM welcome
+    try {
+      const dmEmbed = new EmbedBuilder()
+        .setColor('#9146FF')
+        .setTitle('👋 Welcome to the L3attaR Community!')
+        .setDescription(
+          `Hey **${member.displayName}**, thanks for joining **${member.guild.name}**! 🎉\n\n` +
+          `Here's how to get started:\n` +
+          `> 1️⃣ **Verify** yourself in the server to unlock all channels\n` +
+          `> 2️⃣ **Read the rules** to stay safe and have fun\n` +
+          `> 3️⃣ **Pick your notifications** so you never miss a stream or video\n\n` +
+          `**Follow L3attaR everywhere:**\n` +
+          `🔴 [Twitch](https://twitch.tv/l3attar_) · ` +
+          `📺 [YouTube](https://www.youtube.com/@L3attaR) · ` +
+          `📸 [Instagram](${INSTAGRAM}) · ` +
+          `🎵 [TikTok](https://www.tiktok.com/@l3attar_b)\n\n` +
+          `*See you in the server — Let's get this! 🎮*`
+        )
+        .setThumbnail(member.guild.iconURL())
+        .setFooter({ text: 'L3attaR Community · Built with ❤️' })
+        .setTimestamp();
+      await member.user.send({ embeds: [dmEmbed] });
+    } catch (_) { /* DMs disabled — silently skip */ }
+
   } catch (e) { console.error('[Welcome]', e.message); }
 });
 
@@ -121,6 +161,7 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // ── Button: verify
     if (interaction.isButton() && interaction.customId === 'verify_btn') {
       const { guild, member } = interaction;
       const memberRole = guild.roles.cache.find(r => r.name === '✅ Membre');
@@ -132,6 +173,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: '✅ **Verified!** Welcome to the L3attaR community — all channels are now unlocked! 🎉', ephemeral: true });
     }
 
+    // ── Select menu: notification roles
     if (interaction.isStringSelectMenu() && interaction.customId === 'notif_roles') {
       const { guild, member } = interaction;
       const streamRole = guild.roles.cache.find(r => r.name === '🔔 Stream Alerts');
@@ -145,6 +187,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (!interaction.isChatInputCommand()) return;
 
+    // ── Dynamic command dispatch
+    const cmd = client.commands.get(interaction.commandName);
+    if (cmd) return await cmd.execute(interaction);
+
+    // ── Built-in commands
     if (interaction.commandName === 'setup') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
         return interaction.reply({ content: '❌ Administrator permission required.', ephemeral: true });
@@ -291,7 +338,17 @@ function startYouTubePolling() {
 }
 
 async function registerCommands() {
-  const cmds = [
+  // Collect commands from commands/ folder
+  const dynamicCmds = [];
+  if (fs.existsSync(commandsPath)) {
+    for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
+      const cmd = require(path.join(commandsPath, file));
+      if (cmd?.data) dynamicCmds.push(cmd.data.toJSON());
+    }
+  }
+
+  // Built-in commands
+  const builtinCmds = [
     new SlashCommandBuilder().setName('setup').setDescription('🔧 Build the full server (Admin only)'),
     new SlashCommandBuilder().setName('resetserver').setDescription('🔄 Wipe and rebuild server (Admin only)'),
     new SlashCommandBuilder().setName('live').setDescription('📡 Manually announce a stream')
@@ -299,9 +356,11 @@ async function registerCommands() {
       .addStringOption(o => o.setName('game').setDescription('Game being played')),
     new SlashCommandBuilder().setName('socials').setDescription('🔗 Show all L3attaR social links'),
   ].map(c => c.toJSON());
+
+  const allCmds = [...builtinCmds, ...dynamicCmds];
   const rest = new REST().setToken(process.env.BOT_TOKEN);
-  await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
-  console.log('⚡ Slash commands ready');
+  await rest.put(Routes.applicationCommands(client.user.id), { body: allCmds });
+  console.log(`⚡ Slash commands ready (${allCmds.length} total)`);
 }
 
 client.login(process.env.BOT_TOKEN);
