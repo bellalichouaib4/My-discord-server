@@ -3,11 +3,11 @@ const {
   Client, GatewayIntentBits, Partials, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Events,
   PermissionFlagsBits, REST, Routes, SlashCommandBuilder,
-  ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
-  ChannelType, Collection, MessageFlags,
+  ActivityType, ChannelType, Collection, MessageFlags,
 } = require('discord.js');
 const { DisTube } = require('distube');
 const { YtDlpPlugin } = require('@distube/yt-dlp');
+const ffmpegPath = require('ffmpeg-static');
 const axios  = require('axios');
 const Parser = require('rss-parser');
 const fs     = require('fs');
@@ -34,9 +34,13 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
 });
 
-// ── DisTube setup with yt-dlp plugin
+// ── DisTube with yt-dlp plugin + ffmpeg-static
 const distube = new DisTube(client, {
-  plugins: [new YtDlpPlugin({ update: false })],
+  plugins: [new YtDlpPlugin({
+    update: false,
+    ytdlpArgs: ['--ffmpeg-location', ffmpegPath],
+  })],
+  ffmpeg: { path: ffmpegPath },
   emitNewSongOnly: true,
   joinNewVoiceChannel: true,
 });
@@ -64,7 +68,10 @@ distube
   .on('addSong', (queue, song) => {
     const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
       .setDescription(`**[${song.name}](${song.url})**`)
-      .addFields({ name: '⏱️ Duration', value: song.formattedDuration, inline: true }, { name: '📊 Position', value: `#${queue.songs.length}`, inline: true })
+      .addFields(
+        { name: '⏱️ Duration', value: song.formattedDuration, inline: true },
+        { name: '📊 Position', value: `#${queue.songs.length}`, inline: true },
+      )
       .setThumbnail(song.thumbnail);
     queue.textChannel?.send({ embeds: [embed] }).catch(() => {});
   })
@@ -225,15 +232,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: '✅ **Verified!** Welcome to the L3attaR community — all channels are now unlocked! 🎉', flags: MessageFlags.Ephemeral });
     }
 
-    // ── Button: music controls
+    // ── Buttons: music controls
     if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
       const queue = distube.getQueue(interaction.guild);
       if (!queue) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
-      if (interaction.customId === 'music_skip')  { await distube.skip(interaction.guild);  await interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
-      if (interaction.customId === 'music_stop')  { await distube.stop(interaction.guild);  await interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_skip')  { await distube.skip(interaction.guild);  return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_stop')  { await distube.stop(interaction.guild);  return interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
       if (interaction.customId === 'music_pause') {
         queue.paused ? distube.resume(interaction.guild) : distube.pause(interaction.guild);
-        await interaction.reply({ content: queue.paused ? '▶️ Resumed!' : '⏸️ Paused!', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: queue.paused ? '▶️ Resumed!' : '⏸️ Paused!', flags: MessageFlags.Ephemeral });
       }
       return;
     }
@@ -244,18 +251,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!pending) return interaction.reply({ content: '❌ Search expired. Run `/play` again.', flags: MessageFlags.Ephemeral });
       pendingSearches.delete(interaction.user.id);
       await interaction.deferUpdate();
-
-      const { videos, guildId, channelId, member } = pending;
+      const { videos, channelId } = pending;
       const video = videos[parseInt(interaction.values[0], 10)];
       const vc    = interaction.member.voice?.channel;
       if (!vc) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
-
       try {
         await distube.play(vc, video.url, { member: interaction.member, textChannel: interaction.guild.channels.cache.get(channelId) });
         return interaction.editReply({ content: `🔊 Queued **${video.title}**!`, embeds: [], components: [] });
       } catch (e) {
         console.error('[music pick]', e.message);
-        return interaction.editReply({ content: `❌ Could not play **${video.title}**.`, embeds: [], components: [] });
+        return interaction.editReply({ content: `❌ Could not play **${video.title}**: ${e.message}`, embeds: [], components: [] });
       }
     }
 
@@ -279,7 +284,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const assigned = [], removed = [];
       for (const game of GAME_ROLES) {
         let role = guild.roles.cache.find(r => r.name === game.label);
-        if (!role) role = await guild.roles.create({ name: game.label, colors: [game.color], hoist: false, mentionable: false }).catch(() => null);
+        if (!role) role = await guild.roles.create({ name: game.label, color: game.color, hoist: false, mentionable: false }).catch(() => null);
         if (!role) continue;
         if (selected.includes(game.value)) { await member.roles.add(role).catch(() => {}); assigned.push(game.label); }
         else { await member.roles.remove(role).catch(() => {}); removed.push(game.label); }
