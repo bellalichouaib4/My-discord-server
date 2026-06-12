@@ -6,15 +6,16 @@ const {
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
-  AudioPlayerStatus, getVoiceConnection
+  AudioPlayerStatus, StreamType
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const yts  = require('yt-search');
+const ffmpegPath = require('ffmpeg-static');
+process.env.FFMPEG_PATH = ffmpegPath;
 
 // ── Per-guild queue store
 const queues = new Map();
-
-// ── Pending search results: userId → [videos]
+// ── Pending search results: userId → { videos, voiceChannel, guildId, channelId }
 const pendingSearches = new Map();
 
 function getQueue(guildId) {
@@ -31,8 +32,19 @@ async function playSong(guildId, textChannel) {
   }
   const song = q.songs[0];
   try {
-    const stream   = ytdl(song.url, { filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1 << 25 });
-    const resource = createAudioResource(stream);
+    const stream = ytdl(song.url, {
+      filter: 'audioonly',
+      quality: 'lowestaudio',
+      highWaterMark: 1 << 25,
+      dlChunkSize: 0,
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+        },
+      },
+    });
+
+    const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
     q.player.play(resource);
 
     const embed = new EmbedBuilder()
@@ -54,7 +66,8 @@ async function playSong(guildId, textChannel) {
     );
     await textChannel.send({ embeds: [embed], components: [row] }).catch(() => {});
   } catch (err) {
-    console.error('[Music]', err.message);
+    console.error('[Music] playSong error:', err.message);
+    textChannel?.send({ content: `❌ Could not play **${song.title}** — skipping...` }).catch(() => {});
     q.songs.shift();
     playSong(guildId, textChannel);
   }
@@ -85,7 +98,7 @@ module.exports = {
     const member = interaction.member;
     const q      = getQueue(guild.id);
 
-    // ── /play  →  show 5 search results as a dropdown
+    // ── /play
     if (cmd === 'play') {
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel)
@@ -94,20 +107,23 @@ module.exports = {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const query = interaction.options.getString('query');
 
-      // Direct URL — skip the search menu
+      // Direct URL
       if (ytdl.validateURL(query)) {
         try {
-          const info   = await ytdl.getBasicInfo(query);
-          const d      = info.videoDetails;
-          const song   = {
-            url:       query,
-            title:     d.title,
-            duration:  d.lengthSeconds ? formatDuration(+d.lengthSeconds) : 'Live',
+          const info = await ytdl.getBasicInfo(query, {
+            requestOptions: { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120' } },
+          });
+          const d = info.videoDetails;
+          const song = {
+            url: query,
+            title: d.title,
+            duration: d.lengthSeconds ? formatDuration(+d.lengthSeconds) : 'Live',
             thumbnail: d.thumbnails.slice(-1)[0]?.url,
             requester: member.displayName,
           };
           return await enqueueSong(song, q, guild, member, voiceChannel, interaction);
         } catch (e) {
+          console.error('[/play URL]', e.message);
           return interaction.editReply('❌ Could not load that URL. Try a search instead.');
         }
       }
@@ -118,15 +134,19 @@ module.exports = {
         const videos  = results.videos.slice(0, 5);
         if (!videos.length) return interaction.editReply('❌ No results found. Try a different search.');
 
-        // Store for the select-menu handler
-        pendingSearches.set(interaction.user.id, { videos, voiceChannel, guildId: guild.id, channelId: interaction.channelId });
-        setTimeout(() => pendingSearches.delete(interaction.user.id), 60_000); // expire after 60s
+        pendingSearches.set(interaction.user.id, {
+          videos,
+          voiceChannelId: voiceChannel.id,
+          guildId: guild.id,
+          channelId: interaction.channelId,
+        });
+        setTimeout(() => pendingSearches.delete(interaction.user.id), 60_000);
 
         const options = videos.map((v, i) =>
           new StringSelectMenuOptionBuilder()
             .setValue(String(i))
             .setLabel(`${i + 1}. ${v.title.slice(0, 90)}`)
-            .setDescription(`${v.author?.name ?? 'Unknown'} · ${v.timestamp}`)
+            .setDescription(`${v.author?.name ?? 'Unknown'} · ${v.timestamp || '?'}`)
         );
 
         const menu = new StringSelectMenuBuilder()
@@ -140,48 +160,37 @@ module.exports = {
           .setDescription(
             videos.map((v, i) =>
               `**${i + 1}.** [${v.title}](${v.url})\n` +
-              `┗ 📺 ${v.author?.name ?? 'Unknown'} · ⏱️ ${v.timestamp} · 👁️ ${formatViews(v.views)}`
+              `┗ 📺 ${v.author?.name ?? 'Unknown'} · ⏱️ ${v.timestamp || '?'} · 👁️ ${formatViews(v.views)}`
             ).join('\n\n')
           )
-          .setFooter({ text: 'Pick a song from the dropdown below · expires in 60s' });
+          .setFooter({ text: 'Pick from the dropdown · expires in 60s' });
 
-        const row = new ActionRowBuilder().addComponents(menu);
-        return interaction.editReply({ embeds: [embed], components: [row] });
-
+        return interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] });
       } catch (err) {
         console.error('[/play search]', err.message);
         return interaction.editReply('❌ Search failed. Try again.');
       }
     }
 
-    // ── /skip
     if (cmd === 'skip') {
       if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral });
       q.player.stop();
       return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral });
     }
-
-    // ── /stop
     if (cmd === 'stop') {
       q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(guild.id);
       return interaction.reply({ content: '⏹️ Stopped and cleared the queue.', flags: MessageFlags.Ephemeral });
     }
-
-    // ── /pause
     if (cmd === 'pause') {
       if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral });
       q.player.pause();
       return interaction.reply({ content: '⏸️ Paused.', flags: MessageFlags.Ephemeral });
     }
-
-    // ── /resume
     if (cmd === 'resume') {
       if (!q.player) return interaction.reply({ content: '❌ Nothing is paused.', flags: MessageFlags.Ephemeral });
       q.player.unpause();
       return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral });
     }
-
-    // ── /queue
     if (cmd === 'queue') {
       if (!q.songs.length) return interaction.reply({ content: '💭 The queue is empty.', flags: MessageFlags.Ephemeral });
       const list = q.songs.slice(0, 10).map((s, i) => `${i === 0 ? '🔴' : `${i}.`} **${s.title}** \`${s.duration}\``).join('\n');
@@ -190,34 +199,35 @@ module.exports = {
         .setFooter({ text: `${q.songs.length} song(s) total` });
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     }
-
-    // ── /nowplaying
     if (cmd === 'nowplaying') {
       if (!q.songs[0]) return interaction.reply({ content: '💭 Nothing is playing right now.', flags: MessageFlags.Ephemeral });
       const s = q.songs[0];
       const embed = new EmbedBuilder().setColor('#9146FF').setTitle('🎶 Now Playing')
         .setDescription(`**[${s.title}](${s.url})**`)
         .addFields(
-          { name: '⏱️ Duration',     value: s.duration || 'Live', inline: true },
-          { name: '👤 Requested by', value: s.requester,          inline: true },
+          { name: '⏱️ Duration', value: s.duration || 'Live', inline: true },
+          { name: '👤 Requested by', value: s.requester, inline: true },
         ).setThumbnail(s.thumbnail);
       return interaction.reply({ embeds: [embed] });
     }
   },
 };
 
-// ── Helper: enqueue + start playback or confirm added
 async function enqueueSong(song, q, guild, member, voiceChannel, interaction) {
   q.songs.push(song);
   if (!q.connection) {
-    q.connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+    q.connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+    });
     q.player = createAudioPlayer();
     q.connection.subscribe(q.player);
     const textChannel = guild.channels.cache.get(interaction.channelId);
     q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guild.id, textChannel); });
     q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guild.id, textChannel); });
     playSong(guild.id, textChannel);
-    return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** and starting playback!`, embeds: [], components: [] });
+    return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** — starting playback!`, embeds: [], components: [] });
   } else {
     const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
       .setDescription(`**[${song.title}](${song.url})**`)
@@ -233,10 +243,9 @@ function formatDuration(sec) {
   const m = Math.floor(sec / 60), s = sec % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
-
 function formatViews(n) {
   if (!n) return '?';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
 }
