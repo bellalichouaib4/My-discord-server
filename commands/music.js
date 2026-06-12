@@ -6,7 +6,7 @@ const {
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
-  AudioPlayerStatus, StreamType
+  AudioPlayerStatus, StreamType, VoiceConnectionStatus
 } = require('@discordjs/voice');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const ytSearch  = require('yt-search');
@@ -32,7 +32,7 @@ const pendingSearches = new Map();
 
 function getQueue(guildId) {
   if (!queues.has(guildId))
-    queues.set(guildId, { songs: [], player: null, connection: null, textChannel: null, proc: null });
+    queues.set(guildId, { songs: [], player: null, connection: null, textChannel: null, proc: null, stopping: false });
   return queues.get(guildId);
 }
 
@@ -41,13 +41,26 @@ function killProcs(q) {
   q.proc = null;
 }
 
+// Fully tears down a guild's queue and voice connection
+function destroyQueue(guildId) {
+  const q = queues.get(guildId);
+  if (!q) return;
+  q.stopping = true;
+  killProcs(q);
+  try { q.player?.stop(true); } catch (_) {}
+  try { q.connection?.destroy(); } catch (_) {}
+  queues.delete(guildId);
+}
+
 async function playSong(guildId) {
-  const q = getQueue(guildId);
+  const q = queues.get(guildId);
+  // Queue was destroyed (stop was called) — do nothing
+  if (!q || q.stopping) return;
+
   killProcs(q);
 
   if (!q.songs.length) {
-    q.connection?.destroy();
-    queues.delete(guildId);
+    destroyQueue(guildId);
     return;
   }
 
@@ -117,7 +130,7 @@ async function playSong(guildId) {
 }
 
 module.exports = {
-  queues, getQueue, playSong, pendingSearches,
+  queues, getQueue, playSong, destroyQueue, pendingSearches,
 
   data: [
     new SlashCommandBuilder()
@@ -189,8 +202,22 @@ module.exports = {
       }
     }
 
-    if (cmd === 'skip')   { if (!q.player) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral }); killProcs(q); q.player.stop(); return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
-    if (cmd === 'stop')   { killProcs(q); q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(guild.id); return interaction.reply({ content: '⏹️ Stopped and queue cleared!', flags: MessageFlags.Ephemeral }); }
+    // ── /skip: kill procs, shift queue, play next — don't rely on Idle event
+    if (cmd === 'skip') {
+      if (!q.player || !q.songs.length) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
+      killProcs(q);
+      q.songs.shift();
+      q.player.stop(true); // force-stop without triggering auto-advance
+      playSong(guild.id);
+      return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral });
+    }
+
+    // ── /stop: full teardown
+    if (cmd === 'stop') {
+      destroyQueue(guild.id);
+      return interaction.reply({ content: '⏹️ Stopped and queue cleared!', flags: MessageFlags.Ephemeral });
+    }
+
     if (cmd === 'pause')  { if (!q.player) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral }); q.player.pause();   return interaction.reply({ content: '⏸️ Paused.',   flags: MessageFlags.Ephemeral }); }
     if (cmd === 'resume') { if (!q.player) return interaction.reply({ content: '❌ Nothing paused.',  flags: MessageFlags.Ephemeral }); q.player.unpause(); return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral }); }
     if (cmd === 'queue') {
@@ -208,17 +235,32 @@ module.exports = {
 
 async function enqueue(song, q, guild, vc, interaction) {
   q.songs.push(song);
-  if (!q.connection) {
-    q.connection  = joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
-    q.player      = createAudioPlayer();
-    q.connection.subscribe(q.player);
-    q.textChannel = guild.channels.cache.get(interaction.channelId);
-    q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guild.id); });
-    q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guild.id); });
-    playSong(guild.id);
-    return interaction.editReply({ content: `🔊 Joined **${vc.name}** — starting playback!`, embeds: [], components: [] });
+  // If already connected and playing, just add to queue
+  if (q.connection && q.player) {
+    return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue').setDescription(`**[${song.title}](${song.url})**`).addFields({ name: '⏱️ Duration', value: song.duration, inline: true }, { name: '📊 Position', value: `#${q.songs.length}`, inline: true }).setThumbnail(song.thumbnail)], components: [] });
   }
-  return interaction.editReply({ embeds: [new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue').setDescription(`**[${song.title}](${song.url})**`).addFields({ name: '⏱️ Duration', value: song.duration, inline: true }, { name: '📊 Position', value: `#${q.songs.length}`, inline: true }).setThumbnail(song.thumbnail)], components: [] });
+  // Fresh connection
+  q.stopping    = false;
+  q.connection  = joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+  q.player      = createAudioPlayer();
+  q.connection.subscribe(q.player);
+  q.textChannel = guild.channels.cache.get(interaction.channelId);
+  // Idle = song finished naturally → advance queue
+  q.player.on(AudioPlayerStatus.Idle, () => {
+    const current = queues.get(guild.id);
+    if (!current || current.stopping) return;
+    current.songs.shift();
+    playSong(guild.id);
+  });
+  q.player.on('error', err => {
+    console.error('[Player]', err.message);
+    const current = queues.get(guild.id);
+    if (!current || current.stopping) return;
+    current.songs.shift();
+    playSong(guild.id);
+  });
+  playSong(guild.id);
+  return interaction.editReply({ content: `🔊 Joined **${vc.name}** — starting playback!`, embeds: [], components: [] });
 }
 
 function fmtSec(sec) {
