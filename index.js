@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-// Point DisTube (and yt-dlp) to the bundled ffmpeg BEFORE any other require
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 process.env.PATH = `${require('path').dirname(ffmpegPath)}${require('path').delimiter}${process.env.PATH}`;
@@ -11,8 +10,6 @@ const {
   PermissionFlagsBits, REST, Routes, SlashCommandBuilder,
   ActivityType, ChannelType, Collection, MessageFlags,
 } = require('discord.js');
-const { DisTube } = require('distube');
-const { YtDlpPlugin } = require('@distube/yt-dlp');
 const axios  = require('axios');
 const Parser = require('rss-parser');
 const fs     = require('fs');
@@ -20,7 +17,7 @@ const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
-const { pendingSearches } = require('./commands/music');
+const { pendingSearches, getQueue, playSong } = require('./commands/music');
 const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
@@ -39,57 +36,14 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
 });
 
-// ── DisTube
-const distube = new DisTube(client, {
-  plugins: [new YtDlpPlugin({ update: false })],
-  emitNewSongOnly: true,
-  joinNewVoiceChannel: true,
-});
-
-distube
-  .on('playSong', (queue, song) => {
-    const embed = new EmbedBuilder()
-      .setColor('#9146FF')
-      .setTitle('🎵 Now Playing')
-      .setDescription(`**[${song.name}](${song.url})**`)
-      .addFields(
-        { name: '⏱️ Duration',     value: song.formattedDuration, inline: true },
-        { name: '👤 Requested by', value: song.member?.displayName ?? 'Unknown', inline: true },
-        { name: '📊 Queue',        value: `${queue.songs.length} song(s)`, inline: true },
-      )
-      .setThumbnail(song.thumbnail)
-      .setFooter({ text: 'L3attaR Community · Music' });
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('music_skip').setLabel('⏭️ Skip').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('music_stop').setLabel('⏹️ Stop').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('music_pause').setLabel('⏸️ Pause').setStyle(ButtonStyle.Primary),
-    );
-    queue.textChannel?.send({ embeds: [embed], components: [row] }).catch(() => {});
-  })
-  .on('addSong', (queue, song) => {
-    const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
-      .setDescription(`**[${song.name}](${song.url})**`)
-      .addFields(
-        { name: '⏱️ Duration', value: song.formattedDuration, inline: true },
-        { name: '📊 Position', value: `#${queue.songs.length}`, inline: true },
-      )
-      .setThumbnail(song.thumbnail);
-    queue.textChannel?.send({ embeds: [embed] }).catch(() => {});
-  })
-  .on('error', (channel, error) => {
-    console.error('[DisTube]', error.message);
-    channel?.send(`❌ Music error: ${error.message}`).catch(() => {});
-  })
-  .on('finish', queue => queue.textChannel?.send('⏹️ Queue finished!').catch(() => {}));
-
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
 if (fs.existsSync(commandsPath)) {
   for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
-    const mod = require(path.join(commandsPath, file));
+    const mod  = require(path.join(commandsPath, file));
     const cmds = Array.isArray(mod.data)
-      ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i, distube) }))
-      : (mod?.data && mod?.execute ? [{ data: mod.data, execute: (i) => mod.execute(i, distube) }] : []);
+      ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i) }))
+      : (mod?.data && mod?.execute ? [{ data: mod.data, execute: (i) => mod.execute(i) }] : []);
     for (const cmd of cmds) client.commands.set(cmd.data.name, cmd);
   }
 }
@@ -235,13 +189,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     // ── music buttons
     if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
-      const queue = distube.getQueue(interaction.guild);
-      if (!queue) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
-      if (interaction.customId === 'music_skip')  { await distube.skip(interaction.guild);  return interaction.reply({ content: '⏭️ Skipped!',  flags: MessageFlags.Ephemeral }); }
-      if (interaction.customId === 'music_stop')  { await distube.stop(interaction.guild);  return interaction.reply({ content: '⏹️ Stopped!',  flags: MessageFlags.Ephemeral }); }
+      const q = getQueue(interaction.guild.id);
+      if (!q.player) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId === 'music_skip')  { q.player.stop(); return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_stop')  { q.songs = []; q.player.stop(); q.connection?.destroy(); return interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
       if (interaction.customId === 'music_pause') {
-        queue.paused ? distube.resume(interaction.guild) : distube.pause(interaction.guild);
-        return interaction.reply({ content: queue.paused ? '▶️ Resumed!' : '⏸️ Paused!', flags: MessageFlags.Ephemeral });
+        const { AudioPlayerStatus } = require('@discordjs/voice');
+        if (q.player.state.status === AudioPlayerStatus.Paused) { q.player.unpause(); return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral }); }
+        else { q.player.pause(); return interaction.reply({ content: '⏸️ Paused!', flags: MessageFlags.Ephemeral }); }
       }
       return;
     }
@@ -252,17 +207,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!pending) return interaction.reply({ content: '❌ Search expired. Run `/play` again.', flags: MessageFlags.Ephemeral });
       pendingSearches.delete(interaction.user.id);
       await interaction.deferUpdate();
-      const { videos, channelId } = pending;
+      const { videos, vc, guildId, channelId, member } = pending;
       const video = videos[parseInt(interaction.values[0], 10)];
-      const vc    = interaction.member.voice?.channel;
-      if (!vc) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
-      try {
-        await distube.play(vc, video.url, { member: interaction.member, textChannel: interaction.guild.channels.cache.get(channelId) });
-        return interaction.editReply({ content: `🔊 Queued **${video.title}**!`, embeds: [], components: [] });
-      } catch (e) {
-        console.error('[music pick]', e.message);
-        return interaction.editReply({ content: `❌ Could not play: ${e.message}`, embeds: [], components: [] });
+      const voiceChannel = member.voice?.channel;
+      if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
+      const q = getQueue(guildId);
+      const { joinVoiceChannel, createAudioPlayer, AudioPlayerStatus } = require('@discordjs/voice');
+      const song = {
+        url: video.url, title: video.title,
+        duration: video.timestamp || '?',
+        thumbnail: video.thumbnail || '',
+        requester: member.displayName,
+      };
+      q.songs.push(song);
+      if (!q.connection) {
+        q.connection  = joinVoiceChannel({ channelId: voiceChannel.id, guildId, adapterCreator: interaction.guild.voiceAdapterCreator });
+        q.player      = createAudioPlayer();
+        q.connection.subscribe(q.player);
+        q.textChannel = interaction.guild.channels.cache.get(channelId);
+        q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guildId); });
+        q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guildId); });
+        playSong(guildId);
+        return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** — starting playback!`, embeds: [], components: [] });
       }
+      return interaction.editReply({ content: `✅ Added **${song.title}** to queue (#${q.songs.length})`, embeds: [], components: [] });
     }
 
     // ── notification roles
