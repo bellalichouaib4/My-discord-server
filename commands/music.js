@@ -6,13 +6,28 @@ const {
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
-  AudioPlayerStatus, StreamType, VoiceConnectionStatus,
-  entersState
+  AudioPlayerStatus, StreamType
 } = require('@discordjs/voice');
-const ytdl     = require('@distube/ytdl-core');
-const ytSearch = require('yt-search');
-const ffmpeg   = require('ffmpeg-static');
-const cp       = require('child_process');
+const YTDlpWrap  = require('yt-dlp-wrap').default;
+const ytSearch   = require('yt-search');
+const ffmpeg     = require('ffmpeg-static');
+const cp         = require('child_process');
+const path       = require('path');
+const fs         = require('fs');
+
+// Auto-download yt-dlp binary on first run
+const ytDlpBin = path.join(__dirname, '..', 'bin', 'yt-dlp' + (process.platform === 'win32' ? '.exe' : ''));
+const ytDlp    = new YTDlpWrap(ytDlpBin);
+
+async function ensureYtDlp() {
+  if (fs.existsSync(ytDlpBin)) return;
+  console.log('[Music] Downloading yt-dlp binary...');
+  fs.mkdirSync(path.dirname(ytDlpBin), { recursive: true });
+  await YTDlpWrap.downloadFromGithub(ytDlpBin);
+  console.log('[Music] yt-dlp ready!');
+}
+// kick off download immediately
+ensureYtDlp().catch(e => console.error('[Music] yt-dlp download failed:', e.message));
 
 const queues          = new Map();
 const pendingSearches = new Map();
@@ -32,15 +47,19 @@ async function playSong(guildId) {
   }
   const song = q.songs[0];
   try {
+    await ensureYtDlp();
     console.log('[Music] Streaming:', song.url);
 
-    // Pipe through ffmpeg to get a stable PCM/Opus stream
-    const ytStream = ytdl(song.url, {
-      filter: 'audioonly',
-      quality: 'lowestaudio',
-      highWaterMark: 1 << 25,
-    });
-    const ffmpegProcess = cp.spawn(ffmpeg, [
+    // yt-dlp → stdout as best audio → pipe into ffmpeg → raw PCM → Discord
+    const ytDlpStream = ytDlp.execStream([
+      song.url,
+      '-f', 'bestaudio[ext=webm]/bestaudio/best',
+      '--no-playlist',
+      '-o', '-',
+      '--quiet',
+    ]);
+
+    const ffmpegProc = cp.spawn(ffmpeg, [
       '-i', 'pipe:0',
       '-analyzeduration', '0',
       '-loglevel', '0',
@@ -49,10 +68,12 @@ async function playSong(guildId) {
       '-ac', '2',
       'pipe:1',
     ], { stdio: ['pipe', 'pipe', 'ignore'] });
-    ytStream.pipe(ffmpegProcess.stdin);
-    const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
-    });
+
+    ytDlpStream.pipe(ffmpegProc.stdin);
+    ytDlpStream.on('error', err => { console.error('[yt-dlp stream]', err.message); });
+    ffmpegProc.stdin.on('error', () => {});
+
+    const resource = createAudioResource(ffmpegProc.stdout, { inputType: StreamType.Raw });
     q.player.play(resource);
 
     const embed = new EmbedBuilder()
@@ -60,8 +81,8 @@ async function playSong(guildId) {
       .setTitle('🎵 Now Playing')
       .setDescription(`**[${song.title}](${song.url})**`)
       .addFields(
-        { name: '⏱️ Duration',     value: song.duration,   inline: true },
-        { name: '👤 Requested by', value: song.requester,  inline: true },
+        { name: '⏱️ Duration',     value: song.duration,  inline: true },
+        { name: '👤 Requested by', value: song.requester, inline: true },
         { name: '📊 Queue',        value: `${q.songs.length} song(s)`, inline: true },
       )
       .setThumbnail(song.thumbnail)
@@ -113,13 +134,12 @@ module.exports = {
       // Direct URL
       if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)/.test(query)) {
         try {
-          const info = await ytdl.getBasicInfo(query);
-          const d    = info.videoDetails;
+          const info = JSON.parse(await ytDlp.execPromise([query, '--dump-json', '--no-playlist', '--quiet']));
           const song = {
             url:       query,
-            title:     d.title,
-            duration:  fmtSec(+d.lengthSeconds),
-            thumbnail: d.thumbnails?.slice(-1)[0]?.url || '',
+            title:     info.title,
+            duration:  fmtSec(info.duration || 0),
+            thumbnail: info.thumbnail || '',
             requester: member.displayName,
           };
           return await enqueue(song, q, guild, vc, interaction);
@@ -190,8 +210,8 @@ module.exports = {
 async function enqueue(song, q, guild, vc, interaction) {
   q.songs.push(song);
   if (!q.connection) {
-    q.connection = joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
-    q.player = createAudioPlayer();
+    q.connection  = joinVoiceChannel({ channelId: vc.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+    q.player      = createAudioPlayer();
     q.connection.subscribe(q.player);
     q.textChannel = guild.channels.cache.get(interaction.channelId);
     q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guild.id); });
