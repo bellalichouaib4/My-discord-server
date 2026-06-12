@@ -4,7 +4,7 @@ const {
   StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
   MessageFlags
 } = require('discord.js');
-const playdl = require('play-dl');
+const ytSearch = require('yt-search');
 
 const pendingSearches = new Map();
 
@@ -30,12 +30,15 @@ module.exports = {
     const vc     = member.voice?.channel;
     const queue  = distube.getQueue(interaction.guild);
 
+    // ── /play ──────────────────────────────────────────────────────────────
     if (cmd === 'play') {
-      if (!vc) return interaction.reply({ content: '❌ Join a voice channel first!', flags: MessageFlags.Ephemeral });
+      if (!vc)
+        return interaction.reply({ content: '❌ Join a voice channel first!', flags: MessageFlags.Ephemeral });
+
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const query = interaction.options.getString('query');
 
-      // Direct URL — play immediately
+      // Direct YouTube URL — send straight to DisTube
       if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)/.test(query)) {
         try {
           await distube.play(vc, query, { member, textChannel: interaction.channel });
@@ -46,13 +49,18 @@ module.exports = {
         }
       }
 
-      // Search — show dropdown
+      // Search with yt-search
       try {
-        const results = await playdl.search(query, { source: { youtube: 'video' }, limit: 5 });
-        if (!results.length) return interaction.editReply('❌ No results found.');
+        const { videos } = await ytSearch(query);
+        const results = videos.slice(0, 5);
+        if (!results.length)
+          return interaction.editReply('❌ No results found. Try a different search.');
 
         pendingSearches.set(interaction.user.id, {
-          videos: results, vc, guildId: interaction.guild.id, channelId: interaction.channelId, member,
+          videos: results,
+          vc,
+          channelId: interaction.channelId,
+          member,
         });
         setTimeout(() => pendingSearches.delete(interaction.user.id), 60_000);
 
@@ -60,7 +68,7 @@ module.exports = {
           new StringSelectMenuOptionBuilder()
             .setValue(String(i))
             .setLabel(`${i + 1}. ${v.title.slice(0, 90)}`)
-            .setDescription(`${v.channel?.name ?? 'Unknown'} · ${v.durationRaw || '?'}`)
+            .setDescription(`${v.author?.name ?? 'Unknown'} · ${v.timestamp || '?'}`)
         );
 
         const embed = new EmbedBuilder()
@@ -68,7 +76,8 @@ module.exports = {
           .setTitle(`🔍 Results for "${query}"`)
           .setDescription(
             results.map((v, i) =>
-              `**${i + 1}.** [${v.title}](${v.url})\n┗ 📺 ${v.channel?.name ?? 'Unknown'} · ⏱️ ${v.durationRaw || '?'}`
+              `**${i + 1}.** [${v.title}](${v.url})\n` +
+              `┗ 📺 ${v.author?.name ?? 'Unknown'} · ⏱️ ${v.timestamp || '?'} · 👁️ ${fmtViews(v.views)}`
             ).join('\n\n')
           )
           .setFooter({ text: 'Pick from the dropdown · expires in 60s' });
@@ -76,15 +85,19 @@ module.exports = {
         return interaction.editReply({
           embeds: [embed],
           components: [new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder().setCustomId('music_search_pick').setPlaceholder('🎵 Pick a song…').addOptions(options)
+            new StringSelectMenuBuilder()
+              .setCustomId('music_search_pick')
+              .setPlaceholder('🎵 Pick a song…')
+              .addOptions(options)
           )],
         });
-      } catch (e) {
-        console.error('[/play search]', e.message);
+      } catch (err) {
+        console.error('[/play search]', err.message);
         return interaction.editReply('❌ Search failed. Try again.');
       }
     }
 
+    // ── other commands ─────────────────────────────────────────────────────
     if (cmd === 'skip') {
       if (!queue) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
       await distube.skip(interaction.guild);
@@ -111,19 +124,36 @@ module.exports = {
         `${i === 0 ? '🔴' : `${i}.`} **${s.name}** \`${s.formattedDuration}\``
       ).join('\n');
       return interaction.reply({
-        embeds: [new EmbedBuilder().setColor('#9146FF').setTitle('📊 Queue').setDescription(list).setFooter({ text: `${queue.songs.length} song(s)` })],
+        embeds: [new EmbedBuilder()
+          .setColor('#9146FF')
+          .setTitle('📊 Queue')
+          .setDescription(list)
+          .setFooter({ text: `${queue.songs.length} song(s)` })],
         flags: MessageFlags.Ephemeral,
       });
     }
     if (cmd === 'nowplaying') {
-      if (!queue?.songs[0]) return interaction.reply({ content: '💭 Nothing playing.', flags: MessageFlags.Ephemeral });
+      if (!queue?.songs[0])
+        return interaction.reply({ content: '💭 Nothing playing.', flags: MessageFlags.Ephemeral });
       const s = queue.songs[0];
       return interaction.reply({
-        embeds: [new EmbedBuilder().setColor('#9146FF').setTitle('🎶 Now Playing')
+        embeds: [new EmbedBuilder()
+          .setColor('#9146FF')
+          .setTitle('🎶 Now Playing')
           .setDescription(`**[${s.name}](${s.url})**`)
-          .addFields({ name: '⏱️ Duration', value: s.formattedDuration, inline: true }, { name: '👤 Requested by', value: s.member?.displayName ?? 'Unknown', inline: true })
+          .addFields(
+            { name: '⏱️ Duration',     value: s.formattedDuration, inline: true },
+            { name: '👤 Requested by', value: s.member?.displayName ?? 'Unknown', inline: true },
+          )
           .setThumbnail(s.thumbnail)],
       });
     }
   },
 };
+
+function fmtViews(n) {
+  if (!n) return '?';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
+  return String(n);
+}
