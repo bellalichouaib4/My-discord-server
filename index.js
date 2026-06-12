@@ -59,7 +59,6 @@ client.once(Events.ClientReady, async () => {
   console.log('🛡️  AutoMod active — anti-spam, bad words, invites, anti-raid');
 });
 
-// ── AutoMod: message scanning
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   handleAntiSpam(message);
@@ -204,17 +203,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const { videos, guildId, channelId } = pending;
       const idx   = parseInt(interaction.values[0], 10);
       const video = videos[idx];
+
+      // DEBUG: log all keys so we can see exact field names
+      console.log('[DEBUG video keys]', Object.keys(video));
+      console.log('[DEBUG video]', JSON.stringify(video, null, 2).slice(0, 800));
+
       if (!video) return interaction.editReply({ content: '❌ Invalid selection.', embeds: [], components: [] });
 
       const voiceChannel = interaction.member.voice?.channel;
       if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
 
-      // play-dl video object: .url, .title, .durationRaw, .thumbnails[0].url, .channel.name
+      // Safely extract URL — try every known field name
+      const songUrl = video.url || video.link || video.webpage_url || video.videoUrl || '';
+      const songThumb = video.thumbnails?.[0]?.url || video.thumbnail || video.bestThumbnail?.url || '';
+      const songDuration = video.durationRaw || video.duration || video.timestamp || 'Live';
+
+      console.log('[DEBUG song]', { songUrl, songThumb, songDuration, title: video.title });
+
+      if (!songUrl) return interaction.editReply({ content: '❌ Could not get song URL. Check terminal for debug info.', embeds: [], components: [] });
+
       const song = {
-        url:       video.url,
-        title:     video.title,
-        duration:  video.durationRaw || 'Live',
-        thumbnail: video.thumbnails?.[0]?.url || '',
+        url:       songUrl,
+        title:     video.title || 'Unknown',
+        duration:  songDuration,
+        thumbnail: songThumb,
         requester: interaction.member.displayName,
       };
 
@@ -275,11 +287,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (!interaction.isChatInputCommand()) return;
 
-    // ── Dynamic command dispatch
     const cmd = client.commands.get(interaction.commandName);
     if (cmd) return await cmd.execute(interaction);
 
-    // ── Built-in commands
     if (interaction.commandName === 'setup') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
         return interaction.reply({ content: '❌ Administrator permission required.', flags: MessageFlags.Ephemeral });
