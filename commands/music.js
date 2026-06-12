@@ -10,9 +10,14 @@ const {
 } = require('@discordjs/voice');
 const playdl = require('play-dl');
 
-// ── Per-guild queue store
+// Initialise play-dl (required to bypass YouTube restrictions)
+(async () => {
+  try {
+    await playdl.setToken({ useragent: ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'] });
+  } catch (e) { /* ignore */ }
+})();
+
 const queues = new Map();
-// ── Pending search results: userId → { videos, voiceChannelId, guildId, channelId }
 const pendingSearches = new Map();
 
 function getQueue(guildId) {
@@ -29,7 +34,8 @@ async function playSong(guildId, textChannel) {
   }
   const song = q.songs[0];
   try {
-    const stream   = await playdl.stream(song.url, { quality: 2 });
+    console.log('[Music] Streaming:', song.url);
+    const stream   = await playdl.stream(song.url, { quality: 2, discordPlayerCompatibility: true });
     const resource = createAudioResource(stream.stream, { inputType: stream.type });
     q.player.play(resource);
 
@@ -38,8 +44,8 @@ async function playSong(guildId, textChannel) {
       .setTitle('🎵 Now Playing')
       .setDescription(`**[${song.title}](${song.url})**`)
       .addFields(
-        { name: '⏱️ Duration',     value: song.duration || 'Live',    inline: true },
-        { name: '👤 Requested by', value: song.requester,             inline: true },
+        { name: '⏱️ Duration',     value: song.duration || 'Live',     inline: true },
+        { name: '👤 Requested by', value: song.requester,              inline: true },
         { name: '📊 Queue',        value: `${q.songs.length} song(s)`, inline: true },
       )
       .setThumbnail(song.thumbnail)
@@ -84,7 +90,6 @@ module.exports = {
     const member = interaction.member;
     const q      = getQueue(guild.id);
 
-    // ── /play
     if (cmd === 'play') {
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel)
@@ -94,14 +99,15 @@ module.exports = {
       const query = interaction.options.getString('query');
 
       // Direct YouTube URL
-      if (playdl.yt_validate(query) === 'video') {
+      const urlType = playdl.yt_validate(query);
+      if (urlType === 'video') {
         try {
           const info = (await playdl.video_info(query)).video_details;
           const song = {
             url:       query,
-            title:     info.title,
+            title:     info.title || 'Unknown',
             duration:  info.durationRaw || 'Live',
-            thumbnail: info.thumbnails?.[0]?.url || '',
+            thumbnail: info.thumbnail?.url || '',
             requester: member.displayName,
           };
           return await enqueueSong(song, q, guild, voiceChannel, interaction);
@@ -111,7 +117,7 @@ module.exports = {
         }
       }
 
-      // Search YouTube — top 5 results
+      // Search YouTube — top 5
       try {
         const results = await playdl.search(query, { source: { youtube: 'video' }, limit: 5 });
         if (!results.length) return interaction.editReply('❌ No results found. Try a different search.');
@@ -154,25 +160,10 @@ module.exports = {
       }
     }
 
-    if (cmd === 'skip') {
-      if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral });
-      q.player.stop();
-      return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral });
-    }
-    if (cmd === 'stop') {
-      q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(guild.id);
-      return interaction.reply({ content: '⏹️ Stopped and cleared the queue.', flags: MessageFlags.Ephemeral });
-    }
-    if (cmd === 'pause') {
-      if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral });
-      q.player.pause();
-      return interaction.reply({ content: '⏸️ Paused.', flags: MessageFlags.Ephemeral });
-    }
-    if (cmd === 'resume') {
-      if (!q.player) return interaction.reply({ content: '❌ Nothing is paused.', flags: MessageFlags.Ephemeral });
-      q.player.unpause();
-      return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral });
-    }
+    if (cmd === 'skip')  { if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral }); q.player.stop(); return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
+    if (cmd === 'stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(guild.id); return interaction.reply({ content: '⏹️ Stopped and cleared the queue.', flags: MessageFlags.Ephemeral }); }
+    if (cmd === 'pause') { if (!q.player) return interaction.reply({ content: '❌ Nothing is playing.', flags: MessageFlags.Ephemeral }); q.player.pause(); return interaction.reply({ content: '⏸️ Paused.', flags: MessageFlags.Ephemeral }); }
+    if (cmd === 'resume'){ if (!q.player) return interaction.reply({ content: '❌ Nothing is paused.', flags: MessageFlags.Ephemeral }); q.player.unpause(); return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral }); }
     if (cmd === 'queue') {
       if (!q.songs.length) return interaction.reply({ content: '💭 The queue is empty.', flags: MessageFlags.Ephemeral });
       const list = q.songs.slice(0, 10).map((s, i) => `${i === 0 ? '🔴' : `${i}.`} **${s.title}** \`${s.duration}\``).join('\n');
@@ -187,8 +178,8 @@ module.exports = {
       const embed = new EmbedBuilder().setColor('#9146FF').setTitle('🎶 Now Playing')
         .setDescription(`**[${s.title}](${s.url})**`)
         .addFields(
-          { name: '⏱️ Duration',     value: s.duration || 'Live', inline: true },
-          { name: '👤 Requested by', value: s.requester,          inline: true },
+          { name: '⏱️ Duration', value: s.duration || 'Live', inline: true },
+          { name: '👤 Requested by', value: s.requester, inline: true },
         ).setThumbnail(s.thumbnail);
       return interaction.reply({ embeds: [embed] });
     }
@@ -198,11 +189,7 @@ module.exports = {
 async function enqueueSong(song, q, guild, voiceChannel, interaction) {
   q.songs.push(song);
   if (!q.connection) {
-    q.connection = joinVoiceChannel({
-      channelId:      voiceChannel.id,
-      guildId:        guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-    });
+    q.connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
     q.player = createAudioPlayer();
     q.connection.subscribe(q.player);
     const textChannel = guild.channels.cache.get(interaction.channelId);
