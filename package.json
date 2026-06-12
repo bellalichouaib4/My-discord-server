@@ -1,18 +1,20 @@
 {
   "name": "l3attar-discord-bot",
   "version": "1.0.0",
-  "description": "Official L3attaR streaming Discord bot — verification, Twitch & YouTube notifications, music, game roles",
+  "description": "Official L3attaR streaming Discord bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "postinstall": "node scripts/download-ytdlp.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
     "@discordjs/voice": "^0.17.0",
     "@discordjs/opus": "^0.9.0",
-    "@distube/ytdl-core": "^4.14.4",
-    "yt-search": "^2.10.4",
+    "distube": "^4.2.4",
+    "@distube/yt-dlp": "^1.1.2",
+    "play-dl": "^1.9.7",
     "dotenv": "^16.4.5",
     "axios": "^1.6.8",
     "rss-parser": "^3.13.0"
