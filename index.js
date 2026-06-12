@@ -13,8 +13,9 @@ const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
-const { queues, getQueue, playSong } = require('./commands/music');
+const { queues, getQueue, playSong, pendingSearches } = require('./commands/music');
 const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
+const ytdl = require('@distube/ytdl-core');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
 const GUILD_ID  = config.guildId;
@@ -70,11 +71,9 @@ client.on(Events.MessageCreate, async (message) => {
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
     handleAntiRaid(member);
-
     const guild = member.guild;
     const unverRole = guild.roles.cache.find(r => r.name === '🔒 Unverified');
     if (unverRole) await member.roles.add(unverRole).catch(() => {});
-
     const welcomeCh = guild.channels.cache.find(c => c.name === '👋・welcome');
     if (welcomeCh) {
       const verifyId = guild.channels.cache.find(c => c.name === '🔒・verify')?.id;
@@ -193,6 +192,54 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (interaction.customId === 'music_stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(interaction.guild.id); await interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
       if (interaction.customId === 'music_pause') { q.player?.pause(); await interaction.reply({ content: '⏸️ Paused! Use `/resume` to continue.', flags: MessageFlags.Ephemeral }); }
       return;
+    }
+
+    // ── Select menu: music search pick
+    if (interaction.isStringSelectMenu() && interaction.customId === 'music_search_pick') {
+      const pending = pendingSearches.get(interaction.user.id);
+      if (!pending) return interaction.reply({ content: '❌ Search expired. Run `/play` again.', flags: MessageFlags.Ephemeral });
+      pendingSearches.delete(interaction.user.id);
+
+      await interaction.deferUpdate();
+
+      const { videos, voiceChannel: vcId, guildId, channelId } = pending;
+      const idx   = parseInt(interaction.values[0], 10);
+      const video = videos[idx];
+      if (!video) return interaction.editReply({ content: '❌ Invalid selection.', embeds: [], components: [] });
+
+      const voiceChannel = interaction.member.voice?.channel;
+      if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
+
+      const song = {
+        url:       video.url,
+        title:     video.title,
+        duration:  video.timestamp,
+        thumbnail: video.thumbnail,
+        requester: interaction.member.displayName,
+      };
+
+      const q = getQueue(guildId);
+      q.songs.push(song);
+
+      if (!q.connection) {
+        const { joinVoiceChannel, createAudioPlayer, AudioPlayerStatus } = require('@discordjs/voice');
+        q.connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId, adapterCreator: interaction.guild.voiceAdapterCreator });
+        q.player = createAudioPlayer();
+        q.connection.subscribe(q.player);
+        const textCh = interaction.guild.channels.cache.get(channelId);
+        q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guildId, textCh); });
+        q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guildId, textCh); });
+        playSong(guildId, textCh);
+        return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** — starting **${song.title}**!`, embeds: [], components: [] });
+      } else {
+        const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
+          .setDescription(`**[${song.title}](${song.url})**`)
+          .addFields(
+            { name: '⏱️ Duration', value: song.duration || 'Live', inline: true },
+            { name: '📊 Position',  value: `#${q.songs.length}`,   inline: true },
+          ).setThumbnail(song.thumbnail);
+        return interaction.editReply({ embeds: [embed], components: [] });
+      }
     }
 
     // ── Select menu: notification roles
