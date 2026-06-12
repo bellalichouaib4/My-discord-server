@@ -15,7 +15,6 @@ const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
 const { queues, getQueue, playSong, pendingSearches } = require('./commands/music');
 const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
-const ytdl = require('@distube/ytdl-core');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
 const GUILD_ID  = config.guildId;
@@ -202,7 +201,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.deferUpdate();
 
-      const { videos, voiceChannel: vcId, guildId, channelId } = pending;
+      const { videos, guildId, channelId } = pending;
       const idx   = parseInt(interaction.values[0], 10);
       const video = videos[idx];
       if (!video) return interaction.editReply({ content: '❌ Invalid selection.', embeds: [], components: [] });
@@ -210,11 +209,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const voiceChannel = interaction.member.voice?.channel;
       if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
 
+      // play-dl video object: .url, .title, .durationRaw, .thumbnails[0].url, .channel.name
       const song = {
         url:       video.url,
         title:     video.title,
-        duration:  video.timestamp,
-        thumbnail: video.thumbnail,
+        duration:  video.durationRaw || 'Live',
+        thumbnail: video.thumbnails?.[0]?.url || '',
         requester: interaction.member.displayName,
       };
 
