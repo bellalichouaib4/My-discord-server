@@ -6,6 +6,8 @@ const {
   ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
   ChannelType, Collection, MessageFlags,
 } = require('discord.js');
+const { DisTube } = require('distube');
+const { YtDlpPlugin } = require('@distube/yt-dlp');
 const axios  = require('axios');
 const Parser = require('rss-parser');
 const fs     = require('fs');
@@ -13,7 +15,7 @@ const path   = require('path');
 const config = require('./config.json');
 const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
-const { queues, getQueue, playSong, pendingSearches } = require('./commands/music');
+const { pendingSearches } = require('./commands/music');
 const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
@@ -32,14 +34,54 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember],
 });
 
+// ── DisTube setup with yt-dlp plugin
+const distube = new DisTube(client, {
+  plugins: [new YtDlpPlugin({ update: false })],
+  emitNewSongOnly: true,
+  joinNewVoiceChannel: true,
+});
+
+distube
+  .on('playSong', (queue, song) => {
+    const embed = new EmbedBuilder()
+      .setColor('#9146FF')
+      .setTitle('🎵 Now Playing')
+      .setDescription(`**[${song.name}](${song.url})**`)
+      .addFields(
+        { name: '⏱️ Duration',     value: song.formattedDuration, inline: true },
+        { name: '👤 Requested by', value: song.member?.displayName ?? 'Unknown', inline: true },
+        { name: '📊 Queue',        value: `${queue.songs.length} song(s)`, inline: true },
+      )
+      .setThumbnail(song.thumbnail)
+      .setFooter({ text: 'L3attaR Community · Music' });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('music_skip').setLabel('⏭️ Skip').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('music_stop').setLabel('⏹️ Stop').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('music_pause').setLabel('⏸️ Pause').setStyle(ButtonStyle.Primary),
+    );
+    queue.textChannel?.send({ embeds: [embed], components: [row] }).catch(() => {});
+  })
+  .on('addSong', (queue, song) => {
+    const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
+      .setDescription(`**[${song.name}](${song.url})**`)
+      .addFields({ name: '⏱️ Duration', value: song.formattedDuration, inline: true }, { name: '📊 Position', value: `#${queue.songs.length}`, inline: true })
+      .setThumbnail(song.thumbnail);
+    queue.textChannel?.send({ embeds: [embed] }).catch(() => {});
+  })
+  .on('error', (channel, error) => {
+    console.error('[DisTube]', error.message);
+    channel?.send(`❌ Music error: ${error.message}`).catch(() => {});
+  })
+  .on('finish', queue => queue.textChannel?.send('⏹️ Queue finished!').catch(() => {}));
+
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, 'commands');
 if (fs.existsSync(commandsPath)) {
   for (const file of fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'))) {
     const mod = require(path.join(commandsPath, file));
     const cmds = Array.isArray(mod.data)
-      ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i) }))
-      : (mod?.data && mod?.execute ? [mod] : []);
+      ? mod.data.map(d => ({ data: d, execute: (i) => mod.execute(i, distube) }))
+      : (mod?.data && mod?.execute ? [{ data: mod.data, execute: (i) => mod.execute(i, distube) }] : []);
     for (const cmd of cmds) client.commands.set(cmd.data.name, cmd);
   }
 }
@@ -185,10 +227,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     // ── Button: music controls
     if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
-      const q = getQueue(interaction.guild.id);
-      if (interaction.customId === 'music_skip')  { q.player?.stop();  await interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
-      if (interaction.customId === 'music_stop')  { q.songs = []; q.player?.stop(); q.connection?.destroy(); queues.delete(interaction.guild.id); await interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
-      if (interaction.customId === 'music_pause') { q.player?.pause(); await interaction.reply({ content: '⏸️ Paused! Use `/resume` to continue.', flags: MessageFlags.Ephemeral }); }
+      const queue = distube.getQueue(interaction.guild);
+      if (!queue) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId === 'music_skip')  { await distube.skip(interaction.guild);  await interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_stop')  { await distube.stop(interaction.guild);  await interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_pause') {
+        queue.paused ? distube.resume(interaction.guild) : distube.pause(interaction.guild);
+        await interaction.reply({ content: queue.paused ? '▶️ Resumed!' : '⏸️ Paused!', flags: MessageFlags.Ephemeral });
+      }
       return;
     }
 
@@ -197,60 +243,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const pending = pendingSearches.get(interaction.user.id);
       if (!pending) return interaction.reply({ content: '❌ Search expired. Run `/play` again.', flags: MessageFlags.Ephemeral });
       pendingSearches.delete(interaction.user.id);
-
       await interaction.deferUpdate();
 
-      const { videos, guildId, channelId } = pending;
-      const idx   = parseInt(interaction.values[0], 10);
-      const video = videos[idx];
+      const { videos, guildId, channelId, member } = pending;
+      const video = videos[parseInt(interaction.values[0], 10)];
+      const vc    = interaction.member.voice?.channel;
+      if (!vc) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
 
-      // DEBUG: log all keys so we can see exact field names
-      console.log('[DEBUG video keys]', Object.keys(video));
-      console.log('[DEBUG video]', JSON.stringify(video, null, 2).slice(0, 800));
-
-      if (!video) return interaction.editReply({ content: '❌ Invalid selection.', embeds: [], components: [] });
-
-      const voiceChannel = interaction.member.voice?.channel;
-      if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
-
-      // Safely extract URL — try every known field name
-      const songUrl = video.url || video.link || video.webpage_url || video.videoUrl || '';
-      const songThumb = video.thumbnails?.[0]?.url || video.thumbnail || video.bestThumbnail?.url || '';
-      const songDuration = video.durationRaw || video.duration || video.timestamp || 'Live';
-
-      console.log('[DEBUG song]', { songUrl, songThumb, songDuration, title: video.title });
-
-      if (!songUrl) return interaction.editReply({ content: '❌ Could not get song URL. Check terminal for debug info.', embeds: [], components: [] });
-
-      const song = {
-        url:       songUrl,
-        title:     video.title || 'Unknown',
-        duration:  songDuration,
-        thumbnail: songThumb,
-        requester: interaction.member.displayName,
-      };
-
-      const q = getQueue(guildId);
-      q.songs.push(song);
-
-      if (!q.connection) {
-        const { joinVoiceChannel, createAudioPlayer, AudioPlayerStatus } = require('@discordjs/voice');
-        q.connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId, adapterCreator: interaction.guild.voiceAdapterCreator });
-        q.player = createAudioPlayer();
-        q.connection.subscribe(q.player);
-        const textCh = interaction.guild.channels.cache.get(channelId);
-        q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guildId, textCh); });
-        q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guildId, textCh); });
-        playSong(guildId, textCh);
-        return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** — starting **${song.title}**!`, embeds: [], components: [] });
-      } else {
-        const embed = new EmbedBuilder().setColor('#57F287').setTitle('✅ Added to Queue')
-          .setDescription(`**[${song.title}](${song.url})**`)
-          .addFields(
-            { name: '⏱️ Duration', value: song.duration || 'Live', inline: true },
-            { name: '📊 Position',  value: `#${q.songs.length}`,   inline: true },
-          ).setThumbnail(song.thumbnail);
-        return interaction.editReply({ embeds: [embed], components: [] });
+      try {
+        await distube.play(vc, video.url, { member: interaction.member, textChannel: interaction.guild.channels.cache.get(channelId) });
+        return interaction.editReply({ content: `🔊 Queued **${video.title}**!`, embeds: [], components: [] });
+      } catch (e) {
+        console.error('[music pick]', e.message);
+        return interaction.editReply({ content: `❌ Could not play **${video.title}**.`, embeds: [], components: [] });
       }
     }
 
