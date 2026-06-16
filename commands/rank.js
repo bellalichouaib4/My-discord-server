@@ -2,23 +2,33 @@ const {
   SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits,
 } = require('discord.js');
 
-// In-memory XP store  { userId: { xp, level, messages } }
-const xpStore  = new Map();
+// ─────────────────────────────────────────────────────────────
+// XP STORE
+// xpStore: userId → { xp, level, messages, history: [{ts, xp}] }
+// history is a rolling log of every XP gain with a timestamp so
+// we can sum "XP earned this week / this month" on the fly.
+// ─────────────────────────────────────────────────────────────
+const xpStore   = new Map();
 const cooldowns = new Map();
 
 const XP_PER_MESSAGE = 15;
-const XP_COOLDOWN_MS = 10_000; // 10 s between XP gains
+const XP_COOLDOWN_MS = 10_000;
 
 function xpForLevel(level) {
-  // XP needed to REACH this level (cumulative from 0)
-  if (level <= 1) return 0;  // level 1 starts at 0 XP
+  if (level <= 1) return 0;
   return Math.floor(100 * Math.pow(level - 1, 1.5));
 }
 
 function getUser(userId) {
   if (!xpStore.has(userId))
-    xpStore.set(userId, { xp: 0, level: 1, messages: 0 });
+    xpStore.set(userId, { xp: 0, level: 1, messages: 0, history: [] });
   return xpStore.get(userId);
+}
+
+// Prune history older than 31 days to keep memory clean
+function pruneHistory(user) {
+  const cutoff = Date.now() - 31 * 24 * 60 * 60 * 1000;
+  user.history = user.history.filter(e => e.ts >= cutoff);
 }
 
 function addXp(message) {
@@ -29,8 +39,11 @@ function addXp(message) {
   cooldowns.set(userId, now);
 
   const user   = getUser(userId);
-  user.xp      += XP_PER_MESSAGE + Math.floor(Math.random() * 6); // 15-20 XP
+  const gained = XP_PER_MESSAGE + Math.floor(Math.random() * 6);
+  user.xp      += gained;
   user.messages += 1;
+  user.history.push({ ts: now, xp: gained });
+  pruneHistory(user);
 
   let leveledUp = false;
   while (user.xp >= xpForLevel(user.level + 1)) {
@@ -40,22 +53,42 @@ function addXp(message) {
   return leveledUp ? { level: user.level, user: message.author } : null;
 }
 
-function getLeaderboard(n = 10) {
-  return [...xpStore.entries()]
-    .sort((a, b) => b[1].xp - a[1].xp || b[1].level - a[1].level)
+// ─────────────────────────────────────────────────────────────
+// LEADERBOARD HELPERS
+// period: 'all' | 'week' | 'month'
+// Returns [ [userId, { xp: periodXp, totalLevel, totalXp }], ... ]
+// Only includes users who earned at least 1 XP in the period.
+// ─────────────────────────────────────────────────────────────
+function getLeaderboard(n = 10, period = 'all') {
+  const now    = Date.now();
+  const cutoff = period === 'week'  ? now - 7  * 24 * 60 * 60 * 1000
+               : period === 'month' ? now - 30 * 24 * 60 * 60 * 1000
+               : 0;
+
+  const rows = [];
+  for (const [userId, data] of xpStore) {
+    if (period === 'all') {
+      rows.push([userId, { periodXp: data.xp, level: data.level, totalXp: data.xp }]);
+    } else {
+      const periodXp = data.history
+        .filter(e => e.ts >= cutoff)
+        .reduce((sum, e) => sum + e.xp, 0);
+      if (periodXp === 0) continue; // skip inactive users
+      rows.push([userId, { periodXp, level: data.level, totalXp: data.xp }]);
+    }
+  }
+
+  return rows
+    .sort((a, b) => b[1].periodXp - a[1].periodXp)
     .slice(0, n);
 }
 
+// ─────────────────────────────────────────────────────────────
+// RANK STYLING
+// ─────────────────────────────────────────────────────────────
 const LEVEL_COLORS = [
-  '#747F8D', // 1-4   Iron
-  '#CD7F32', // 5-9   Bronze
-  '#C0C0C0', // 10-14 Silver
-  '#FFD700', // 15-19 Gold
-  '#00D4FF', // 20-29 Platinum
-  '#B9F2FF', // 30-39 Diamond
-  '#00FF87', // 40-49 Ascendant
-  '#FF4655', // 50-74 Immortal
-  '#FFFB96', // 75+   Radiant
+  '#747F8D','#CD7F32','#C0C0C0','#FFD700',
+  '#00D4FF','#B9F2FF','#00FF87','#FF4655','#FFFB96',
 ];
 function levelColor(level) {
   if (level >= 75) return LEVEL_COLORS[8];
@@ -96,9 +129,18 @@ module.exports = {
     // ── /leaderboard
     new SlashCommandBuilder()
       .setName('leaderboard')
-      .setDescription('🏆 Show the top 10 most active members'),
+      .setDescription('🏆 Show the most active members')
+      .addStringOption(o =>
+        o.setName('period')
+         .setDescription('Time period to rank by (default: all time)')
+         .setRequired(false)
+         .addChoices(
+           { name: '🔵 This Week',  value: 'week'  },
+           { name: '🟣 This Month', value: 'month' },
+           { name: '🌍 All Time',   value: 'all'   },
+         )),
 
-    // ── /setlevel  (owner + mods only)
+    // ── /setlevel
     new SlashCommandBuilder()
       .setName('setlevel')
       .setDescription('🔧 Manually set a member\'s level (Mod/Owner only)')
@@ -118,7 +160,7 @@ module.exports = {
   async execute(interaction) {
     const cmd = interaction.commandName;
 
-    // ────────────────── /rank ──────────────────
+    // ──────────────────────── /rank ────────────────────────
     if (cmd === 'rank') {
       await interaction.deferReply();
 
@@ -129,12 +171,16 @@ module.exports = {
       const prevLvlXp = xpForLevel(data.level);
       const nextLvlXp = xpForLevel(data.level + 1);
       const needed    = Math.max(1, nextLvlXp - prevLvlXp);
-      const progress  = Math.max(0, data.xp - prevLvlXp); // clamp >= 0
-      const barFilled = Math.min(20, Math.max(0, Math.round((progress / needed) * 20))); // 0-20
+      const progress  = Math.max(0, data.xp - prevLvlXp);
+      const barFilled = Math.min(20, Math.max(0, Math.round((progress / needed) * 20)));
       const bar       = '█'.repeat(barFilled) + '░'.repeat(20 - barFilled);
 
       const sorted   = [...xpStore.entries()].sort((a, b) => b[1].xp - a[1].xp);
       const position = sorted.findIndex(([id]) => id === target.id) + 1 || '—';
+
+      // XP earned this week
+      const weekCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const weekXp     = (data.history ?? []).filter(e => e.ts >= weekCutoff).reduce((s, e) => s + e.xp, 0);
 
       const embed = new EmbedBuilder()
         .setColor(levelColor(data.level))
@@ -145,6 +191,7 @@ module.exports = {
           { name: '⭐ Total XP',    value: `**${data.xp}**`,       inline: true },
           { name: '💬 Messages',    value: `**${data.messages}**`, inline: true },
           { name: '🏅 Server Rank', value: `**#${position}**`,    inline: true },
+          { name: '🔵 XP This Week', value: `**${weekXp}**`,       inline: true },
         )
         .setFooter({ text: 'L3attaR Community · Server Rank' })
         .setTimestamp();
@@ -152,25 +199,38 @@ module.exports = {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    // ────────────────── /leaderboard ──────────────────
+    // ──────────────────────── /leaderboard ────────────────────────
     if (cmd === 'leaderboard') {
       await interaction.deferReply();
 
-      const top = getLeaderboard(10);
-      if (!top.length)
-        return interaction.editReply({ content: '💭 No one has earned XP yet — start chatting!' });
+      const period = interaction.options.getString('period') ?? 'all';
+      const top    = getLeaderboard(10, period);
+
+      const periodLabel = period === 'week'  ? '🔵 This Week'
+                        : period === 'month' ? '🟣 This Month'
+                        : '🌍 All Time';
+
+      if (!top.length) {
+        const msg = period === 'all'
+          ? '💭 No one has earned XP yet — start chatting!'
+          : `💭 Nobody was active ${period === 'week' ? 'this week' : 'this month'} yet!`;
+        return interaction.editReply({ content: msg });
+      }
 
       const medals = ['🥇', '🥈', '🥉'];
       const lines  = await Promise.all(top.map(async ([userId, d], i) => {
         const m    = await interaction.guild.members.fetch(userId).catch(() => null);
         const name = m?.displayName ?? `<@${userId}>`;
         const icon = medals[i] ?? `**${i + 1}.**`;
-        return `${icon} ${name} — ${levelTitle(d.level)} Lv.**${d.level}** · ${d.xp} XP`;
+        const xpLabel = period === 'all'
+          ? `${d.totalXp} XP total`
+          : `**+${d.periodXp} XP** ${period === 'week' ? 'this week' : 'this month'}`;
+        return `${icon} ${name} — ${levelTitle(d.level)} Lv.**${d.level}** · ${xpLabel}`;
       }));
 
       const embed = new EmbedBuilder()
-        .setColor('#FFD700')
-        .setTitle('🏆 Server Leaderboard — Top 10')
+        .setColor(period === 'week' ? '#00D4FF' : period === 'month' ? '#9B59B6' : '#FFD700')
+        .setTitle(`🏆 Server Leaderboard — ${periodLabel}`)
         .setDescription(lines.join('\n'))
         .setFooter({ text: 'L3attaR Community · Most Active Members' })
         .setTimestamp();
@@ -178,7 +238,7 @@ module.exports = {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    // ────────────────── /setlevel ──────────────────
+    // ──────────────────────── /setlevel ────────────────────────
     if (cmd === 'setlevel') {
       const isOwner = interaction.guild.ownerId === interaction.user.id;
       const isMod   = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles);
@@ -192,7 +252,7 @@ module.exports = {
       const data     = getUser(target.id);
 
       data.level = newLevel;
-      data.xp    = xpForLevel(newLevel); // set XP to the start of that level
+      data.xp    = xpForLevel(newLevel);
 
       const m    = await interaction.guild.members.fetch(target.id).catch(() => null);
       const name = m?.displayName ?? target.username;
