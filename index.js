@@ -153,16 +153,47 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     const j2cHub = guild.channels.cache.find(c => c.name === '➕ Create Room');
     if (newState.channelId && j2cHub && newState.channelId === j2cHub.id) {
       const member = newState.member;
-      const newCh  = await guild.channels.create({
+      const membreRole = guild.roles.cache.find(r => r.name === '✅ Membre');
+
+      const permissionOverwrites = [
+        // Deny @everyone by default (view only — they can't connect without role)
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak],
+        },
+        // Allow ✅ Membre role to view, connect AND speak
+        ...(membreRole ? [{
+          id: membreRole.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak,
+            PermissionFlagsBits.UseVAD,
+            PermissionFlagsBits.Stream,
+          ],
+        }] : []),
+        // Room owner gets full control
+        {
+          id: member.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak,
+            PermissionFlagsBits.UseVAD,
+            PermissionFlagsBits.Stream,
+            PermissionFlagsBits.MuteMembers,
+            PermissionFlagsBits.MoveMembers,
+            PermissionFlagsBits.ManageChannels,
+          ],
+        },
+      ];
+
+      const newCh = await guild.channels.create({
         name: `🎮 ${member.displayName}'s Room`,
         type: ChannelType.GuildVoice,
         parent: j2cHub.parentId,
         userLimit: 10,
-        permissionOverwrites: [
-          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: guild.roles.cache.find(r => r.name === '✅ Membre')?.id ?? guild.roles.everyone.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
-          { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.MoveMembers, PermissionFlagsBits.ManageChannels] },
-        ].filter(p => p.id),
+        permissionOverwrites,
       });
       await member.voice.setChannel(newCh);
       j2cChannels.set(member.id, newCh.id);
