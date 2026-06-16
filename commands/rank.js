@@ -10,7 +10,9 @@ const XP_PER_MESSAGE = 15;
 const XP_COOLDOWN_MS = 10_000; // 10 s between XP gains
 
 function xpForLevel(level) {
-  return Math.floor(100 * Math.pow(level, 1.5));
+  // XP needed to REACH this level (cumulative from 0)
+  if (level <= 1) return 0;  // level 1 starts at 0 XP
+  return Math.floor(100 * Math.pow(level - 1, 1.5));
 }
 
 function getUser(userId) {
@@ -124,12 +126,11 @@ module.exports = {
       const data    = getUser(target.id);
       const member  = await interaction.guild.members.fetch(target.id).catch(() => null);
 
-      const currentXp = data.xp;
-      const nextLvlXp = xpForLevel(data.level + 1);
       const prevLvlXp = xpForLevel(data.level);
-      const progress  = currentXp - prevLvlXp;
-      const needed    = nextLvlXp  - prevLvlXp;
-      const barFilled = Math.round((progress / needed) * 20);
+      const nextLvlXp = xpForLevel(data.level + 1);
+      const needed    = Math.max(1, nextLvlXp - prevLvlXp);
+      const progress  = Math.max(0, data.xp - prevLvlXp); // clamp >= 0
+      const barFilled = Math.min(20, Math.max(0, Math.round((progress / needed) * 20))); // 0-20
       const bar       = '█'.repeat(barFilled) + '░'.repeat(20 - barFilled);
 
       const sorted   = [...xpStore.entries()].sort((a, b) => b[1].xp - a[1].xp);
@@ -141,7 +142,7 @@ module.exports = {
         .setTitle(`${levelTitle(data.level)}  ·  Level ${data.level}`)
         .setDescription(`\`[${bar}]\`\n**${progress} / ${needed} XP** to level ${data.level + 1}`)
         .addFields(
-          { name: '⭐ Total XP',    value: `**${currentXp}**`,    inline: true },
+          { name: '⭐ Total XP',    value: `**${data.xp}**`,       inline: true },
           { name: '💬 Messages',    value: `**${data.messages}**`, inline: true },
           { name: '🏅 Server Rank', value: `**#${position}**`,    inline: true },
         )
@@ -160,11 +161,11 @@ module.exports = {
         return interaction.editReply({ content: '💭 No one has earned XP yet — start chatting!' });
 
       const medals = ['🥇', '🥈', '🥉'];
-      const lines  = await Promise.all(top.map(async ([userId, data], i) => {
+      const lines  = await Promise.all(top.map(async ([userId, d], i) => {
         const m    = await interaction.guild.members.fetch(userId).catch(() => null);
         const name = m?.displayName ?? `<@${userId}>`;
         const icon = medals[i] ?? `**${i + 1}.**`;
-        return `${icon} ${name} — ${levelTitle(data.level)} Lv.**${data.level}** · ${data.xp} XP`;
+        return `${icon} ${name} — ${levelTitle(d.level)} Lv.**${d.level}** · ${d.xp} XP`;
       }));
 
       const embed = new EmbedBuilder()
@@ -179,7 +180,6 @@ module.exports = {
 
     // ────────────────── /setlevel ──────────────────
     if (cmd === 'setlevel') {
-      // Double-check: must have ManageRoles OR be the guild owner
       const isOwner = interaction.guild.ownerId === interaction.user.id;
       const isMod   = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles);
       if (!isOwner && !isMod)
@@ -191,12 +191,11 @@ module.exports = {
       const newLevel = interaction.options.getInteger('level');
       const data     = getUser(target.id);
 
-      // Set XP to exactly the start of the chosen level
       data.level = newLevel;
-      data.xp    = xpForLevel(newLevel);
+      data.xp    = xpForLevel(newLevel); // set XP to the start of that level
 
-      const member = await interaction.guild.members.fetch(target.id).catch(() => null);
-      const name   = member?.displayName ?? target.username;
+      const m    = await interaction.guild.members.fetch(target.id).catch(() => null);
+      const name = m?.displayName ?? target.username;
 
       return interaction.editReply({
         embeds: [
