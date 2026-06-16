@@ -19,6 +19,7 @@ const setupGuild = require('./setup');
 const { GAME_ROLES } = require('./commands/gameroles');
 const { pendingSearches, getQueue, playSong } = require('./commands/music');
 const { handleAntiSpam, handleBadWords, handleInviteLinks, handleAntiRaid, unlockServer } = require('./automod');
+const { addXp } = require('./commands/rank');
 
 const INSTAGRAM = 'https://www.instagram.com/l3attar/';
 const GUILD_ID  = config.guildId;
@@ -61,6 +62,7 @@ client.once(Events.ClientReady, async () => {
   if (hasTW) startTwitchPolling(); else console.log('⚠️  Twitch keys not set — polling skipped');
   if (hasYT) startYouTubePolling(); else console.log('⚠️  YouTube channel ID not set — polling skipped');
   console.log('🛡️  AutoMod active — anti-spam, bad words, invites, anti-raid');
+  console.log('⭐ XP system active');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -68,6 +70,22 @@ client.on(Events.MessageCreate, async (message) => {
   handleAntiSpam(message);
   await handleBadWords(message);
   await handleInviteLinks(message);
+
+  // XP gain
+  const levelUp = addXp(message);
+  if (levelUp) {
+    const ch = message.channel;
+    await ch.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor('#FFD700')
+          .setTitle('⬆️ Level Up!')
+          .setDescription(`🎉 GG ${message.author}! You reached **Level ${levelUp.level}**!`)
+          .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+          .setFooter({ text: 'L3attaR Community · Server Rank' }),
+      ],
+    }).catch(() => {});
+  }
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
@@ -189,10 +207,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     // ── music buttons
     if (interaction.isButton() && ['music_skip','music_stop','music_pause'].includes(interaction.customId)) {
+      const { killProcs, destroyQueue } = require('./commands/music');
       const q = getQueue(interaction.guild.id);
       if (!q.player) return interaction.reply({ content: '❌ Nothing playing.', flags: MessageFlags.Ephemeral });
-      if (interaction.customId === 'music_skip')  { q.player.stop(); return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral }); }
-      if (interaction.customId === 'music_stop')  { q.songs = []; q.player.stop(); q.connection?.destroy(); return interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral }); }
+      if (interaction.customId === 'music_skip') {
+        killProcs(q);
+        q.songs.shift();
+        q.player.stop(true);
+        playSong(interaction.guild.id);
+        return interaction.reply({ content: '⏭️ Skipped!', flags: MessageFlags.Ephemeral });
+      }
+      if (interaction.customId === 'music_stop') {
+        destroyQueue(interaction.guild.id);
+        return interaction.reply({ content: '⏹️ Stopped!', flags: MessageFlags.Ephemeral });
+      }
       if (interaction.customId === 'music_pause') {
         const { AudioPlayerStatus } = require('@discordjs/voice');
         if (q.player.state.status === AudioPlayerStatus.Paused) { q.player.unpause(); return interaction.reply({ content: '▶️ Resumed!', flags: MessageFlags.Ephemeral }); }
@@ -207,12 +235,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!pending) return interaction.reply({ content: '❌ Search expired. Run `/play` again.', flags: MessageFlags.Ephemeral });
       pendingSearches.delete(interaction.user.id);
       await interaction.deferUpdate();
-      const { videos, vc, guildId, channelId, member } = pending;
+      const { videos, guildId, channelId, member } = pending;
       const video = videos[parseInt(interaction.values[0], 10)];
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel) return interaction.editReply({ content: '❌ Join a voice channel first!', embeds: [], components: [] });
       const q = getQueue(guildId);
-      const { joinVoiceChannel, createAudioPlayer, AudioPlayerStatus } = require('@discordjs/voice');
       const song = {
         url: video.url, title: video.title,
         duration: video.timestamp || '?',
@@ -220,13 +247,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
         requester: member.displayName,
       };
       q.songs.push(song);
-      if (!q.connection) {
+      if (!q.connection || !q.player) {
+        const { joinVoiceChannel, createAudioPlayer, AudioPlayerStatus } = require('@discordjs/voice');
+        q.stopping    = false;
         q.connection  = joinVoiceChannel({ channelId: voiceChannel.id, guildId, adapterCreator: interaction.guild.voiceAdapterCreator });
         q.player      = createAudioPlayer();
         q.connection.subscribe(q.player);
         q.textChannel = interaction.guild.channels.cache.get(channelId);
-        q.player.on(AudioPlayerStatus.Idle, () => { q.songs.shift(); playSong(guildId); });
-        q.player.on('error', err => { console.error('[Player]', err.message); q.songs.shift(); playSong(guildId); });
+        q.player.on(AudioPlayerStatus.Idle, () => {
+          const current = require('./commands/music').queues.get(guildId);
+          if (!current || current.stopping) return;
+          current.songs.shift();
+          playSong(guildId);
+        });
+        q.player.on('error', err => {
+          console.error('[Player]', err.message);
+          const current = require('./commands/music').queues.get(guildId);
+          if (!current || current.stopping) return;
+          current.songs.shift();
+          playSong(guildId);
+        });
         playSong(guildId);
         return interaction.editReply({ content: `🔊 Joined **${voiceChannel.name}** — starting playback!`, embeds: [], components: [] });
       }
