@@ -1,72 +1,155 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const axios = require('axios');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 
-const RANK_COLORS = {
-  Iron: '#8B8B8B', Bronze: '#CD7F32', Silver: '#C0C0C0',
-  Gold: '#FFD700', Platinum: '#00D4FF', Diamond: '#B9F2FF',
-  Ascendant: '#00FF87', Immortal: '#FF4655', Radiant: '#FFFB96', Unranked: '#747F8D',
-};
-function rankColor(tierName) {
-  return RANK_COLORS[tierName?.split(' ')[0]] || '#9146FF';
+// In-memory XP store  { userId: { xp, level, messages } }
+// For persistence across restarts, swap this Map with a JSON file or DB
+const xpStore = new Map();
+
+const XP_PER_MESSAGE  = 15;   // base XP per message
+const XP_COOLDOWN_MS  = 10_000; // 10s cooldown between XP gains
+const cooldowns       = new Map();
+
+function xpForLevel(level) {
+  // XP needed to reach this level: 100 * level^1.5
+  return Math.floor(100 * Math.pow(level, 1.5));
+}
+
+function getUser(userId) {
+  if (!xpStore.has(userId))
+    xpStore.set(userId, { xp: 0, level: 1, messages: 0 });
+  return xpStore.get(userId);
+}
+
+// Call this from index.js on every non-bot MessageCreate
+function addXp(message) {
+  if (message.author.bot) return null;
+  const userId = message.author.id;
+  const now    = Date.now();
+  if (cooldowns.has(userId) && now - cooldowns.get(userId) < XP_COOLDOWN_MS) return null;
+  cooldowns.set(userId, now);
+
+  const user   = getUser(userId);
+  const gained = XP_PER_MESSAGE + Math.floor(Math.random() * 6); // 15–20 XP
+  user.xp      += gained;
+  user.messages += 1;
+
+  let leveledUp = false;
+  while (user.xp >= xpForLevel(user.level + 1)) {
+    user.level++;
+    leveledUp = true;
+  }
+  return leveledUp ? { level: user.level, user: message.author } : null;
+}
+
+// Leaderboard helper — top N users sorted by XP
+function getLeaderboard(n = 10) {
+  return [...xpStore.entries()]
+    .sort((a, b) => b[1].xp - a[1].xp || b[1].level - a[1].level)
+    .slice(0, n);
+}
+
+const LEVEL_COLORS = [
+  '#747F8D', // 1-4  grey
+  '#CD7F32', // 5-9  bronze
+  '#C0C0C0', // 10-14 silver
+  '#FFD700', // 15-19 gold
+  '#00D4FF', // 20-29 platinum
+  '#B9F2FF', // 30-39 diamond
+  '#00FF87', // 40-49 ascendant
+  '#FF4655', // 50-74 immortal
+  '#FFFB96', // 75+  radiant
+];
+function levelColor(level) {
+  if (level >= 75) return LEVEL_COLORS[8];
+  if (level >= 50) return LEVEL_COLORS[7];
+  if (level >= 40) return LEVEL_COLORS[6];
+  if (level >= 30) return LEVEL_COLORS[5];
+  if (level >= 20) return LEVEL_COLORS[4];
+  if (level >= 15) return LEVEL_COLORS[3];
+  if (level >= 10) return LEVEL_COLORS[2];
+  if (level >= 5)  return LEVEL_COLORS[1];
+  return LEVEL_COLORS[0];
+}
+function levelTitle(level) {
+  if (level >= 75) return '✨ Radiant';
+  if (level >= 50) return '🔴 Immortal';
+  if (level >= 40) return '🌿 Ascendant';
+  if (level >= 30) return '💎 Diamond';
+  if (level >= 20) return '🔵 Platinum';
+  if (level >= 15) return '🥇 Gold';
+  if (level >= 10) return '🥈 Silver';
+  if (level >= 5)  return '🥉 Bronze';
+  return '⚙️ Iron';
 }
 
 module.exports = {
-  data: new SlashCommandBuilder()
-    .setName('rank')
-    .setDescription('🎯 Check a Valorant player\'s rank')
-    .addStringOption(o => o.setName('name').setDescription('Riot ID name (e.g. l3attar)').setRequired(true))
-    .addStringOption(o => o.setName('tag').setDescription('Riot tag without # (e.g. EUW1)').setRequired(true))
-    .addStringOption(o => o.setName('region')
-      .setDescription('Region (default: eu)')
-      .addChoices(
-        { name: 'EU', value: 'eu' },
-        { name: 'NA', value: 'na' },
-        { name: 'AP', value: 'ap' },
-        { name: 'KR', value: 'kr' },
-      )
-    ),
+  xpStore, getUser, addXp, getLeaderboard,
+
+  data: [
+    new SlashCommandBuilder()
+      .setName('rank')
+      .setDescription('📊 Check your server rank & XP')
+      .addUserOption(o => o.setName('user').setDescription('Check another member (leave blank for yourself)')),
+    new SlashCommandBuilder()
+      .setName('leaderboard')
+      .setDescription('🏆 Show the top 10 most active members'),
+  ],
 
   async execute(interaction) {
-    await interaction.deferReply();
-    const name   = interaction.options.getString('name').trim();
-    const tag    = interaction.options.getString('tag').trim().replace('#', '');
-    const region = interaction.options.getString('region') || 'eu';
-    try {
-      const [mmrRes, profileRes] = await Promise.allSettled([
-        axios.get(`https://api.henrikdev.xyz/valorant/v2/mmr/${region}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`),
-        axios.get(`https://api.henrikdev.xyz/valorant/v1/account/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`),
-      ]);
-      if (mmrRes.status === 'rejected' || mmrRes.value.data?.status !== 200)
-        return interaction.editReply({ content: `❌ Player **${name}#${tag}** not found on **${region.toUpperCase()}**. Try a different region.` });
-      const mmr     = mmrRes.value.data.data;
-      const profile = profileRes.status === 'fulfilled' ? profileRes.value.data.data : null;
-      const currentTier = mmr.current_data?.currenttierpatched || 'Unranked';
-      const rr          = mmr.current_data?.ranking_in_tier     ?? 0;
-      const peakTier    = mmr.highest_rank?.patched_tier         || 'N/A';
-      const peakSeason  = mmr.highest_rank?.season               || '';
-      const rankIcon    = mmr.current_data?.images?.large        || null;
-      const card        = profile?.card?.small                   || null;
-      const level       = profile?.account_level                 || '?';
+    const cmd = interaction.commandName;
+
+    // ── /rank
+    if (cmd === 'rank') {
+      const target = interaction.options.getUser('user') || interaction.user;
+      const data   = getUser(target.id);
+      const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+
+      const currentXp  = data.xp;
+      const nextLvlXp  = xpForLevel(data.level + 1);
+      const prevLvlXp  = xpForLevel(data.level);
+      const progress   = currentXp - prevLvlXp;
+      const needed     = nextLvlXp - prevLvlXp;
+      const barFilled  = Math.round((progress / needed) * 20);
+      const bar        = '█'.repeat(barFilled) + '░'.repeat(20 - barFilled);
+
+      // Rank position on leaderboard
+      const sorted   = [...xpStore.entries()].sort((a, b) => b[1].xp - a[1].xp);
+      const position = sorted.findIndex(([id]) => id === target.id) + 1 || '—';
+
       const embed = new EmbedBuilder()
-        .setColor(rankColor(currentTier))
-        .setAuthor({ name: `${name}#${tag}`, iconURL: card || undefined })
-        .setTitle(`🎯 Valorant Rank — ${currentTier}`)
-        .setThumbnail(rankIcon)
+        .setColor(levelColor(data.level))
+        .setAuthor({ name: member?.displayName ?? target.username, iconURL: target.displayAvatarURL({ dynamic: true }) })
+        .setTitle(`${levelTitle(data.level)}  ·  Level ${data.level}`)
+        .setDescription(`\`[${bar}]\`\n**${progress} / ${needed} XP** to level ${data.level + 1}`)
         .addFields(
-          { name: '🏅 Current Rank', value: `**${currentTier}**`,              inline: true },
-          { name: '🔺 RR',           value: `**${rr} RR**`,                    inline: true },
-          { name: '🌍 Region',       value: `**${region.toUpperCase()}**`,      inline: true },
-          { name: '🏆 Peak Rank',    value: `**${peakTier}** (${peakSeason})`, inline: true },
-          { name: '📊 Account Lvl', value: `**${level}**`,                     inline: true },
+          { name: '⭐ Total XP',    value: `**${currentXp}**`,    inline: true },
+          { name: '💬 Messages',    value: `**${data.messages}**`, inline: true },
+          { name: '🏅 Server Rank', value: `**#${position}**`,    inline: true },
         )
-        .setFooter({ text: 'L3attaR Community · Data via Henrik Dev API' })
+        .setFooter({ text: 'L3attaR Community · Server Rank' })
         .setTimestamp();
-      return interaction.editReply({ embeds: [embed] });
-    } catch (err) {
-      console.error('[/rank]', err.message);
-      if (err.response?.status === 404) return interaction.editReply({ content: `❌ Player **${name}#${tag}** not found.` });
-      if (err.response?.status === 429) return interaction.editReply({ content: '⏳ Rate limited — try again in a few seconds.' });
-      return interaction.editReply({ content: '❌ Something went wrong. Try again later.' });
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // ── /leaderboard
+    if (cmd === 'leaderboard') {
+      const top = getLeaderboard(10);
+      if (!top.length) return interaction.reply({ content: '💭 No one has earned XP yet!', flags: MessageFlags.Ephemeral });
+
+      const medals = ['🥇', '🥈', '🥉'];
+      const lines  = await Promise.all(top.map(async ([userId, data], i) => {
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const name   = member?.displayName ?? `<@${userId}>`;
+        const medal  = medals[i] ?? `**${i + 1}.**`;
+        return `${medal} ${name} — ${levelTitle(data.level)} Lv.**${data.level}** · ${data.xp} XP`;
+      }));
+
+      const embed = new EmbedBuilder()
+        .setColor('#FFD700')
+        .setTitle('🏆 Server Leaderboard — Top 10')
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: 'L3attaR Community · Most Active Members' })
+        .setTimestamp();
+      return interaction.reply({ embeds: [embed] });
     }
   },
 };
