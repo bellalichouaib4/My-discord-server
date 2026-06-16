@@ -1,15 +1,15 @@
-const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
+const {
+  SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits,
+} = require('discord.js');
 
 // In-memory XP store  { userId: { xp, level, messages } }
-// For persistence across restarts, swap this Map with a JSON file or DB
-const xpStore = new Map();
+const xpStore  = new Map();
+const cooldowns = new Map();
 
-const XP_PER_MESSAGE  = 15;   // base XP per message
-const XP_COOLDOWN_MS  = 10_000; // 10s cooldown between XP gains
-const cooldowns       = new Map();
+const XP_PER_MESSAGE = 15;
+const XP_COOLDOWN_MS = 10_000; // 10 s between XP gains
 
 function xpForLevel(level) {
-  // XP needed to reach this level: 100 * level^1.5
   return Math.floor(100 * Math.pow(level, 1.5));
 }
 
@@ -19,7 +19,6 @@ function getUser(userId) {
   return xpStore.get(userId);
 }
 
-// Call this from index.js on every non-bot MessageCreate
 function addXp(message) {
   if (message.author.bot) return null;
   const userId = message.author.id;
@@ -28,8 +27,7 @@ function addXp(message) {
   cooldowns.set(userId, now);
 
   const user   = getUser(userId);
-  const gained = XP_PER_MESSAGE + Math.floor(Math.random() * 6); // 15–20 XP
-  user.xp      += gained;
+  user.xp      += XP_PER_MESSAGE + Math.floor(Math.random() * 6); // 15-20 XP
   user.messages += 1;
 
   let leveledUp = false;
@@ -40,7 +38,6 @@ function addXp(message) {
   return leveledUp ? { level: user.level, user: message.author } : null;
 }
 
-// Leaderboard helper — top N users sorted by XP
 function getLeaderboard(n = 10) {
   return [...xpStore.entries()]
     .sort((a, b) => b[1].xp - a[1].xp || b[1].level - a[1].level)
@@ -48,15 +45,15 @@ function getLeaderboard(n = 10) {
 }
 
 const LEVEL_COLORS = [
-  '#747F8D', // 1-4  grey
-  '#CD7F32', // 5-9  bronze
-  '#C0C0C0', // 10-14 silver
-  '#FFD700', // 15-19 gold
-  '#00D4FF', // 20-29 platinum
-  '#B9F2FF', // 30-39 diamond
-  '#00FF87', // 40-49 ascendant
-  '#FF4655', // 50-74 immortal
-  '#FFFB96', // 75+  radiant
+  '#747F8D', // 1-4   Iron
+  '#CD7F32', // 5-9   Bronze
+  '#C0C0C0', // 10-14 Silver
+  '#FFD700', // 15-19 Gold
+  '#00D4FF', // 20-29 Platinum
+  '#B9F2FF', // 30-39 Diamond
+  '#00FF87', // 40-49 Ascendant
+  '#FF4655', // 50-74 Immortal
+  '#FFFB96', // 75+   Radiant
 ];
 function levelColor(level) {
   if (level >= 75) return LEVEL_COLORS[8];
@@ -73,7 +70,7 @@ function levelTitle(level) {
   if (level >= 75) return '✨ Radiant';
   if (level >= 50) return '🔴 Immortal';
   if (level >= 40) return '🌿 Ascendant';
-  if (level >= 30) return '💎 Diamond';
+  if (level >= 30) return '📎 Diamond';
   if (level >= 20) return '🔵 Platinum';
   if (level >= 15) return '🥇 Gold';
   if (level >= 10) return '🥈 Silver';
@@ -85,33 +82,56 @@ module.exports = {
   xpStore, getUser, addXp, getLeaderboard,
 
   data: [
+    // ── /rank
     new SlashCommandBuilder()
       .setName('rank')
       .setDescription('📊 Check your server rank & XP')
-      .addUserOption(o => o.setName('user').setDescription('Check another member (leave blank for yourself)')),
+      .addUserOption(o =>
+        o.setName('user')
+         .setDescription('Check another member (leave blank for yourself)')
+         .setRequired(false)),
+
+    // ── /leaderboard
     new SlashCommandBuilder()
       .setName('leaderboard')
       .setDescription('🏆 Show the top 10 most active members'),
+
+    // ── /setlevel  (owner + mods only)
+    new SlashCommandBuilder()
+      .setName('setlevel')
+      .setDescription('🔧 Manually set a member\'s level (Mod/Owner only)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
+      .addUserOption(o =>
+        o.setName('user')
+         .setDescription('The member to adjust')
+         .setRequired(true))
+      .addIntegerOption(o =>
+        o.setName('level')
+         .setDescription('New level (1 – 100)')
+         .setMinValue(1)
+         .setMaxValue(100)
+         .setRequired(true)),
   ],
 
   async execute(interaction) {
     const cmd = interaction.commandName;
 
-    // ── /rank
+    // ────────────────── /rank ──────────────────
     if (cmd === 'rank') {
-      const target = interaction.options.getUser('user') || interaction.user;
-      const data   = getUser(target.id);
-      const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+      await interaction.deferReply();
 
-      const currentXp  = data.xp;
-      const nextLvlXp  = xpForLevel(data.level + 1);
-      const prevLvlXp  = xpForLevel(data.level);
-      const progress   = currentXp - prevLvlXp;
-      const needed     = nextLvlXp - prevLvlXp;
-      const barFilled  = Math.round((progress / needed) * 20);
-      const bar        = '█'.repeat(barFilled) + '░'.repeat(20 - barFilled);
+      const target  = interaction.options.getUser('user') ?? interaction.user;
+      const data    = getUser(target.id);
+      const member  = await interaction.guild.members.fetch(target.id).catch(() => null);
 
-      // Rank position on leaderboard
+      const currentXp = data.xp;
+      const nextLvlXp = xpForLevel(data.level + 1);
+      const prevLvlXp = xpForLevel(data.level);
+      const progress  = currentXp - prevLvlXp;
+      const needed    = nextLvlXp  - prevLvlXp;
+      const barFilled = Math.round((progress / needed) * 20);
+      const bar       = '█'.repeat(barFilled) + '░'.repeat(20 - barFilled);
+
       const sorted   = [...xpStore.entries()].sort((a, b) => b[1].xp - a[1].xp);
       const position = sorted.findIndex(([id]) => id === target.id) + 1 || '—';
 
@@ -127,20 +147,24 @@ module.exports = {
         )
         .setFooter({ text: 'L3attaR Community · Server Rank' })
         .setTimestamp();
-      return interaction.reply({ embeds: [embed] });
+
+      return interaction.editReply({ embeds: [embed] });
     }
 
-    // ── /leaderboard
+    // ────────────────── /leaderboard ──────────────────
     if (cmd === 'leaderboard') {
+      await interaction.deferReply();
+
       const top = getLeaderboard(10);
-      if (!top.length) return interaction.reply({ content: '💭 No one has earned XP yet!', flags: MessageFlags.Ephemeral });
+      if (!top.length)
+        return interaction.editReply({ content: '💭 No one has earned XP yet — start chatting!' });
 
       const medals = ['🥇', '🥈', '🥉'];
       const lines  = await Promise.all(top.map(async ([userId, data], i) => {
-        const member = await interaction.guild.members.fetch(userId).catch(() => null);
-        const name   = member?.displayName ?? `<@${userId}>`;
-        const medal  = medals[i] ?? `**${i + 1}.**`;
-        return `${medal} ${name} — ${levelTitle(data.level)} Lv.**${data.level}** · ${data.xp} XP`;
+        const m    = await interaction.guild.members.fetch(userId).catch(() => null);
+        const name = m?.displayName ?? `<@${userId}>`;
+        const icon = medals[i] ?? `**${i + 1}.**`;
+        return `${icon} ${name} — ${levelTitle(data.level)} Lv.**${data.level}** · ${data.xp} XP`;
       }));
 
       const embed = new EmbedBuilder()
@@ -149,7 +173,41 @@ module.exports = {
         .setDescription(lines.join('\n'))
         .setFooter({ text: 'L3attaR Community · Most Active Members' })
         .setTimestamp();
-      return interaction.reply({ embeds: [embed] });
+
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    // ────────────────── /setlevel ──────────────────
+    if (cmd === 'setlevel') {
+      // Double-check: must have ManageRoles OR be the guild owner
+      const isOwner = interaction.guild.ownerId === interaction.user.id;
+      const isMod   = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles);
+      if (!isOwner && !isMod)
+        return interaction.reply({ content: '❌ Only moderators and the server owner can use this command.', flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const target   = interaction.options.getUser('user');
+      const newLevel = interaction.options.getInteger('level');
+      const data     = getUser(target.id);
+
+      // Set XP to exactly the start of the chosen level
+      data.level = newLevel;
+      data.xp    = xpForLevel(newLevel);
+
+      const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+      const name   = member?.displayName ?? target.username;
+
+      return interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(levelColor(newLevel))
+            .setTitle('🔧 Level Updated')
+            .setDescription(`${name} is now **${levelTitle(newLevel)} — Level ${newLevel}**.`)
+            .setFooter({ text: `Set by ${interaction.user.username}` })
+            .setTimestamp(),
+        ],
+      });
     }
   },
 };
